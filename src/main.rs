@@ -33,7 +33,7 @@ fn main() {
         }
     };
 
-    if matches.opt_present("s") {
+    if matches.opt_present("h") {
         print_usage(&program, opts);
         return;
     }
