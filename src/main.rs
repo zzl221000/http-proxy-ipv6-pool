@@ -34,6 +34,10 @@ fn main() {
         print_usage(&program, opts);
         return;
     }
+    if matches.opt_present("s") {
+        print_usage(&program, opts);
+        return;
+    }
     opts.optopt("s", "system_route", "use system route (provide 1 to enable)", "ROUTE");
 
     // Parse the options
