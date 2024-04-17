@@ -86,7 +86,9 @@ impl Proxy {
                 let socket = TcpSocket::new_v6()?;
                 let bind_addr = get_rand_ipv6_socket_addr(self.ipv6, self.prefix_len);
                 if SYSTEM_ROUTE.load(Ordering::SeqCst) {
+
                     let cmd_str = format!("ip addr add {}/128 dev eth0", bind_addr);
+                    println!("sh -c {cmd_str} ");
                     let status = Command::new("sh")
                         .arg("-c")
                         .arg(&cmd_str)
