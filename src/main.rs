@@ -4,8 +4,9 @@ use cidr::Ipv6Cidr;
 use getopts::Options;
 use proxy::start_proxy;
 use std::{env, process::exit};
-use std::sync::atomic::Ordering;
+use std::sync::atomic::{AtomicBool, Ordering};
 use proxy::SYSTEM_ROUTE;
+
 fn print_usage(program: &str, opts: Options) {
     let brief = format!("Usage: {} [options]", program);
     print!("{}", opts.usage(&brief));
@@ -49,6 +50,7 @@ fn main() {
     println!("System route option received: {}", system_route);
 
     let route_flag = system_route == "1";
+    println!("System route option received: {}", route_flag);
     SYSTEM_ROUTE.store(route_flag, Ordering::SeqCst);
 
     let bind_addr = matches.opt_str("b").unwrap_or("0.0.0.0:51080".to_string());
