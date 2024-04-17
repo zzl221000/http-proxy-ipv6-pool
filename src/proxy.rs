@@ -85,6 +85,7 @@ impl Proxy {
             for addr in addrs {
                 let socket = TcpSocket::new_v6()?;
                 let bind_addr = get_rand_ipv6_socket_addr(self.ipv6, self.prefix_len);
+                println!("Current value of SYSTEM_ROUTE: {}", SYSTEM_ROUTE.load(Ordering::SeqCst));
                 if SYSTEM_ROUTE.load(Ordering::SeqCst) {
 
                     let cmd_str = format!("ip addr add {}/128 dev eth0", bind_addr);
