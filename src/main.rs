@@ -24,21 +24,19 @@ fn main() {
         "IPv6_SUBNET",
     );
     opts.optflag("h", "help", "print this help menu");
+    opts.optopt("s", "system_route", "use system route (provide 1 to enable)", "ROUTE");
+
     let matches = match opts.parse(&args[1..]) {
         Ok(m) => m,
         Err(f) => {
             panic!("{}", f.to_string())
         }
     };
-    if matches.opt_present("h") {
-        print_usage(&program, opts);
-        return;
-    }
+
     if matches.opt_present("s") {
         print_usage(&program, opts);
         return;
     }
-    opts.optopt("s", "system_route", "use system route (provide 1 to enable)", "ROUTE");
 
     // Parse the options
     let matches = match opts.parse(&args[1..]) {
