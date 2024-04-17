@@ -10,6 +10,9 @@ use tokio::{
     io::{AsyncRead, AsyncWrite},
     net::TcpSocket,
 };
+use tokio::process::Command;
+use std::sync::atomic::{AtomicBool, Ordering};
+pub static SYSTEM_ROUTE: AtomicBool = AtomicBool::new(false);
 
 pub async fn start_proxy(
     listen_addr: SocketAddr,
@@ -82,6 +85,17 @@ impl Proxy {
             for addr in addrs {
                 let socket = TcpSocket::new_v6()?;
                 let bind_addr = get_rand_ipv6_socket_addr(self.ipv6, self.prefix_len);
+                if SYSTEM_ROUTE.load(Ordering::SeqCst) {
+                    let cmd_str = format!("ip addr add {}/128 dev eth0", bind_addr);
+                    let status = Command::new("sh")
+                        .arg("-c")
+                        .arg(&cmd_str)
+                        .status()
+                        .await?;
+                    if !status.success() {
+                        eprintln!("Failed to execute command: {}", cmd_str);
+                    }
+                }
                 if socket.bind(bind_addr).is_ok() {
                     println!("{addr_str} via {bind_addr}");
                     if let Ok(mut server) = socket.connect(addr).await {

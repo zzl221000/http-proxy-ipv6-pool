@@ -4,7 +4,8 @@ use cidr::Ipv6Cidr;
 use getopts::Options;
 use proxy::start_proxy;
 use std::{env, process::exit};
-
+use std::sync::atomic::Ordering;
+use proxy::SYSTEM_ROUTE;
 fn print_usage(program: &str, opts: Options) {
     let brief = format!("Usage: {} [options]", program);
     print!("{}", opts.usage(&brief));
@@ -33,6 +34,20 @@ fn main() {
         print_usage(&program, opts);
         return;
     }
+    opts.optopt("s", "system_route", "use system route (provide 1 to enable)", "ROUTE");
+
+    // Parse the options
+    let matches = match opts.parse(&args[1..]) {
+        Ok(m) => m,
+        Err(f) => panic!("Error parsing options: {}", f),
+    };
+
+    // Check if the system_route option was provided and act accordingly
+    let system_route = matches.opt_str("s").unwrap_or("0".to_string());
+    println!("System route option received: {}", system_route);
+
+    let route_flag = system_route == "1";
+    SYSTEM_ROUTE.store(route_flag, Ordering::SeqCst);
 
     let bind_addr = matches.opt_str("b").unwrap_or("0.0.0.0:51080".to_string());
     let ipve_subnet = matches
