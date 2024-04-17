@@ -6,7 +6,7 @@
 
 使用方法
 ```shell
-./http-proxy-ipv6-pool -b 127.0.0.1:51080 -i 2a12:bec0:165:106::/64 -s eth0
+./http-proxy-ipv6-pool -b 127.0.0.1:51080 -i 2a12:bec0:165:106::/64 -s eth0 -g 2001:4860:4860::8888
 ```
 # Http Proxy IPv6 Pool
 
