@@ -6,26 +6,31 @@ use hyper::{
 };
 use rand::Rng;
 use std::net::{IpAddr, Ipv6Addr, SocketAddr, ToSocketAddrs};
-use tokio::{
-    io::{AsyncRead, AsyncWrite},
-    net::TcpSocket,
-};
+use tokio::{io::{AsyncRead, AsyncWrite}, net::TcpSocket, task};
+use std::sync::{Arc};
 use tokio::process::Command;
-use std::sync::atomic::{AtomicBool, Ordering};
-pub static SYSTEM_ROUTE: AtomicBool = AtomicBool::new(false);
+
+
 
 pub async fn start_proxy(
     listen_addr: SocketAddr,
+    is_system_route: bool,
+    interface: String,
     (ipv6, prefix_len): (Ipv6Addr, u8),
 ) -> Result<(), Box<dyn std::error::Error>> {
-    let make_service = make_service_fn(move |_: &AddrStream| async move {
-        Ok::<_, hyper::Error>(service_fn(move |req| {
-            Proxy {
-                ipv6: ipv6.into(),
-                prefix_len,
-            }
-            .proxy(req)
-        }))
+    let interface_arc = Arc::new(interface);
+    let make_service = make_service_fn(move |_: &AddrStream| {
+        let interface_clone = Arc::clone(&interface_arc);
+        async move {
+            let interface_per_request = interface_clone.clone();
+            Ok::<_, hyper::Error>(service_fn(move |req| {
+                Proxy {
+                    ipv6: ipv6.into(),
+                    prefix_len,
+                }
+                    .proxy(req,is_system_route,(*interface_per_request).clone())
+            }))
+        }
     });
 
     Server::bind(&listen_addr)
@@ -43,32 +48,39 @@ pub(crate) struct Proxy {
 }
 
 impl Proxy {
-    pub(crate) async fn proxy(self, req: Request<Body>) -> Result<Response<Body>, hyper::Error> {
+    pub(crate) async fn proxy(self, req: Request<Body>,is_system_route: bool,interface: String) -> Result<Response<Body>, hyper::Error> {
         match if req.method() == Method::CONNECT {
-            self.process_connect(req).await
+            self.process_connect(req,is_system_route,interface.clone()).await
         } else {
-            self.process_request(req).await
+            self.process_request(req,is_system_route,interface.clone()).await
         } {
             Ok(resp) => Ok(resp),
             Err(e) => Err(e),
         }
     }
 
-    async fn process_connect(self, req: Request<Body>) -> Result<Response<Body>, hyper::Error> {
+    async fn process_connect(self, req: Request<Body>,is_system_route: bool,interface: String) -> Result<Response<Body>, hyper::Error> {
         tokio::task::spawn(async move {
             let remote_addr = req.uri().authority().map(|auth| auth.to_string()).unwrap();
             let mut upgraded = hyper::upgrade::on(req).await.unwrap();
-            self.tunnel(&mut upgraded, remote_addr).await
+            self.tunnel(&mut upgraded, remote_addr,is_system_route,interface.clone()).await
         });
         Ok(Response::new(Body::empty()))
     }
 
-    async fn process_request(self, req: Request<Body>) -> Result<Response<Body>, hyper::Error> {
+    async fn process_request(self, req: Request<Body>,is_system_route: bool,interface: String) -> Result<Response<Body>, hyper::Error> {
         let bind_addr = get_rand_ipv6(self.ipv6, self.prefix_len);
         let mut http = HttpConnector::new();
         http.set_local_address(Some(bind_addr));
         println!("{} via {bind_addr}", req.uri().host().unwrap_or_default());
+        if is_system_route {
 
+            let cmd_str = format!("ip addr add {}/{} dev {}", bind_addr,self.prefix_len,interface);
+            self.execute_command(cmd_str).await;
+            let cmd_traceroute_str = format!("traceroute -s {} 2001:4860:4860::8888", bind_addr);
+            self.execute_command(cmd_traceroute_str).await;
+
+        }
         let client = Client::builder()
             .http1_title_case_headers(true)
             .http1_preserve_header_case(true)
@@ -76,8 +88,20 @@ impl Proxy {
         let res = client.request(req).await?;
         Ok(res)
     }
+    async fn execute_command(&self, cmd_str: String)  {
+        println!("{cmd_str} ");
+        task::spawn(async move {
+            let _result = Command::new("sh")
+                .arg("-c")
+                .arg(&cmd_str)
+                .status()
+                .await
+                .map_err(|e| eprintln!("Failed to execute command: {}. Error: {}", cmd_str, e))
+                .ok();
+        });
 
-    async fn tunnel<A>(self, upgraded: &mut A, addr_str: String) -> std::io::Result<()>
+    }
+    async fn tunnel<A>(self, upgraded: &mut A, addr_str: String,is_system_route: bool,interface: String) -> std::io::Result<()>
     where
         A: AsyncRead + AsyncWrite + Unpin + ?Sized,
     {
@@ -85,19 +109,13 @@ impl Proxy {
             for addr in addrs {
                 let socket = TcpSocket::new_v6()?;
                 let bind_addr = get_rand_ipv6_socket_addr(self.ipv6, self.prefix_len);
-                println!("Current value of SYSTEM_ROUTE: {}", SYSTEM_ROUTE.load(Ordering::SeqCst));
-                if SYSTEM_ROUTE.load(Ordering::SeqCst) {
+                if is_system_route {
 
-                    let cmd_str = format!("ip addr add {}/128 dev eth0", bind_addr);
-                    println!("sh -c {cmd_str} ");
-                    let status = Command::new("sh")
-                        .arg("-c")
-                        .arg(&cmd_str)
-                        .status()
-                        .await?;
-                    if !status.success() {
-                        eprintln!("Failed to execute command: {}", cmd_str);
-                    }
+                    let cmd_str = format!("ip addr add {}/{} dev {}", bind_addr.ip(),self.prefix_len,interface);
+
+                    self.execute_command(cmd_str).await;
+                    let cmd_traceroute_str = format!("traceroute -s {} 2001:4860:4860::8888", bind_addr.ip());
+                    self.execute_command(cmd_traceroute_str).await;
                 }
                 if socket.bind(bind_addr).is_ok() {
                     println!("{addr_str} via {bind_addr}");

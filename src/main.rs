@@ -4,8 +4,7 @@ use cidr::Ipv6Cidr;
 use getopts::Options;
 use proxy::start_proxy;
 use std::{env, process::exit};
-use std::sync::atomic::{AtomicBool, Ordering};
-use proxy::SYSTEM_ROUTE;
+
 
 fn print_usage(program: &str, opts: Options) {
     let brief = format!("Usage: {} [options]", program);
@@ -25,7 +24,7 @@ fn main() {
         "IPv6_SUBNET",
     );
     opts.optflag("h", "help", "print this help menu");
-    opts.optopt("s", "system_route", "use system route (provide 1 to enable)", "ROUTE");
+    opts.optopt("s", "system_route", "Whether to use system routing instead of ndpdd. (Provide network card interface, such as eth0)", "Network Interface");
 
     let matches = match opts.parse(&args[1..]) {
         Ok(m) => m,
@@ -46,22 +45,20 @@ fn main() {
     };
 
     // Check if the system_route option was provided and act accordingly
-    let system_route = matches.opt_str("s").unwrap_or("0".to_string());
+    let system_route = matches.opt_str("s").unwrap_or("".to_string());
     println!("System route option received: {}", system_route);
 
-    let route_flag = system_route == "1";
-    println!("System route option received: {}", route_flag);
-    SYSTEM_ROUTE.store(route_flag, Ordering::SeqCst);
+
 
     let bind_addr = matches.opt_str("b").unwrap_or("0.0.0.0:51080".to_string());
     let ipve_subnet = matches
         .opt_str("i")
         .unwrap_or("2001:19f0:6001:48e4::/64".to_string());
-    run(bind_addr, ipve_subnet)
+    run(bind_addr,system_route, ipve_subnet)
 }
 
 #[tokio::main]
-async fn run(bind_addr: String, ipv6_subnet: String) {
+async fn run(bind_addr: String,system_route: String, ipv6_subnet: String) {
     let ipv6 = match ipv6_subnet.parse::<Ipv6Cidr>() {
         Ok(cidr) => {
             let a = cidr.first_address();
@@ -81,7 +78,14 @@ async fn run(bind_addr: String, ipv6_subnet: String) {
             return;
         }
     };
-    if let Err(e) = start_proxy(bind_addr, ipv6).await {
-        println!("{}", e);
+    if system_route != "" {
+        if let Err(e) = start_proxy(bind_addr,true,system_route.clone(), ipv6).await {
+            println!("{}", e);
+        }
+    }else {
+        if let Err(e) = start_proxy(bind_addr,false,system_route.clone(), ipv6).await {
+            println!("{}", e);
+        }
     }
+
 }

@@ -1,3 +1,13 @@
+修改并增加了-s 选项.
+
+使得不需要ndppd也可以使用
+
+因为某些服务商不支持ndppd或者很慢
+
+使用方法
+```shell
+./http-proxy-ipv6-pool -b 127.0.0.1:51080 -i 2a12:bec0:165:106::/64 -s eth0
+```
 # Http Proxy IPv6 Pool
 
 Make every request from a separate IPv6 address.
