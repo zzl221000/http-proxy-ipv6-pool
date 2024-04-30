@@ -9,8 +9,15 @@ use std::net::{IpAddr, Ipv6Addr, SocketAddr, ToSocketAddrs};
 use tokio::{io::{AsyncRead, AsyncWrite}, net::TcpSocket, task};
 use std::sync::{Arc};
 use tokio::process::Command;
+use std::collections::HashMap;
+use std::sync::Mutex;
+use lazy_static::lazy_static;
 
 
+lazy_static! {
+    // 使用全局的 Mutex 包装的 HashMap 来存储网址与 IP 的映射
+    static ref IP_MAP: Mutex<HashMap<String, IpAddr>> = Mutex::new(HashMap::new());
+}
 
 pub async fn start_proxy(
     listen_addr: SocketAddr,
@@ -73,7 +80,7 @@ impl Proxy {
     }
 
     async fn process_request(self, req: Request<Body>,is_system_route: bool,interface: String, gateway: String) -> Result<Response<Body>, hyper::Error> {
-        let bind_addr = get_rand_ipv6(self.ipv6, self.prefix_len);
+        let bind_addr = get_rand_ipv6(self.ipv6, self.prefix_len, req.uri().host().unwrap_or_default());
         let mut http = HttpConnector::new();
         http.set_local_address(Some(bind_addr));
         println!("{} via {bind_addr}", req.uri().host().unwrap_or_default());
@@ -115,7 +122,7 @@ impl Proxy {
         if let Ok(addrs) = addr_str.to_socket_addrs() {
             for addr in addrs {
                 let socket = TcpSocket::new_v6()?;
-                let bind_addr = get_rand_ipv6_socket_addr(self.ipv6, self.prefix_len);
+                let bind_addr = get_rand_ipv6_socket_addr(self.ipv6, self.prefix_len,addr_str);
                 if is_system_route {
 
                     let cmd_str = format!("ip addr add {}/{} dev {}", bind_addr.ip(),self.prefix_len,interface);
@@ -142,15 +149,35 @@ impl Proxy {
     }
 }
 
-fn get_rand_ipv6_socket_addr(ipv6: u128, prefix_len: u8) -> SocketAddr {
+fn get_rand_ipv6_socket_addr(ipv6: u128, prefix_len: u8, addr_str: String) -> SocketAddr {
     let mut rng = rand::thread_rng();
-    SocketAddr::new(get_rand_ipv6(ipv6, prefix_len), rng.gen::<u16>())
+    SocketAddr::new(get_rand_ipv6(ipv6, prefix_len, &*addr_str), rng.gen::<u16>())
 }
 
-fn get_rand_ipv6(mut ipv6: u128, prefix_len: u8) -> IpAddr {
+// fn get_rand_ipv6(mut ipv6: u128, prefix_len: u8) -> IpAddr {
+//     let rand: u128 = rand::thread_rng().gen();
+//     let net_part = (ipv6 >> (128 - prefix_len)) << (128 - prefix_len);
+//     let host_part = (rand << prefix_len) >> prefix_len;
+//     ipv6 = net_part | host_part;
+//     IpAddr::V6(ipv6.into())
+// }
+fn get_rand_ipv6(mut ipv6: u128, prefix_len: u8, hostname: &str) -> IpAddr {
+    let mut ip_map = IP_MAP.lock().unwrap();
+
+    // 检查此 hostname 是否已有存储的 IP 地址
+    if let Some(ip) = ip_map.get(hostname) {
+        return *ip;
+    }
+
+    // 生成新的 IP 地址
     let rand: u128 = rand::thread_rng().gen();
     let net_part = (ipv6 >> (128 - prefix_len)) << (128 - prefix_len);
     let host_part = (rand << prefix_len) >> prefix_len;
     ipv6 = net_part | host_part;
-    IpAddr::V6(ipv6.into())
+    let new_ip = IpAddr::V6(ipv6.into());
+
+    // 存储 hostname 与新生成的 IP 地址
+    ip_map.insert(hostname.to_string(), new_ip);
+
+    new_ip
 }

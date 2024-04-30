@@ -129,6 +129,7 @@ dependencies = [
  "cidr",
  "getopts",
  "hyper",
+ "lazy_static",
  "rand",
  "tokio",
 ]
