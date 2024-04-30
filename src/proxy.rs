@@ -122,7 +122,7 @@ impl Proxy {
         if let Ok(addrs) = addr_str.to_socket_addrs() {
             for addr in addrs {
                 let socket = TcpSocket::new_v6()?;
-                let bind_addr = get_rand_ipv6_socket_addr(self.ipv6, self.prefix_len,addr_str);
+                let bind_addr = get_rand_ipv6_socket_addr(self.ipv6, self.prefix_len,&addr_str);
                 if is_system_route {
 
                     let cmd_str = format!("ip addr add {}/{} dev {}", bind_addr.ip(),self.prefix_len,interface);
@@ -149,7 +149,7 @@ impl Proxy {
     }
 }
 
-fn get_rand_ipv6_socket_addr(ipv6: u128, prefix_len: u8, addr_str: String) -> SocketAddr {
+fn get_rand_ipv6_socket_addr(ipv6: u128, prefix_len: u8, addr_str: &String) -> SocketAddr {
     let mut rng = rand::thread_rng();
     SocketAddr::new(get_rand_ipv6(ipv6, prefix_len, &*addr_str), rng.gen::<u16>())
 }
