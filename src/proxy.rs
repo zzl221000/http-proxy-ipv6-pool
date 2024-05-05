@@ -155,6 +155,10 @@ fn get_rand_ipv6_socket_addr(ipv6: u128, prefix_len: u8) -> SocketAddr {
 }
 
 fn get_rand_ipv6(mut ipv6: u128, prefix_len: u8) -> IpAddr {
+    if prefix_len == 128 {
+        // 如果 prefix_len 为 128，直接返回原始地址
+        return IpAddr::V6(ipv6.into());
+    }
     let rand: u128 = random();
     let net_part = (ipv6 >> (128 - prefix_len)) << (128 - prefix_len);
     let host_part = (rand << prefix_len) >> prefix_len;
