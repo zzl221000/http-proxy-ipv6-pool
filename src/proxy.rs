@@ -128,7 +128,7 @@ impl Proxy {
                     // Remove only the excess addresses, following FIFO order
                     for _ in 0..addresses_to_remove {
                         if let Some(addr) = queue.pop_front() {
-                            let cmd_str = format!("ip addr del {} dev {}", addr, interface);
+                            let cmd_str = format!("ip addr del {}/{} dev {}", addr,self.prefix_len, interface);
                             if let Err(e) = self.execute_command_del(cmd_str.clone()).await {
                                 eprintln!("Failed to execute command {}: {:?}", cmd_str, e);
                             }
