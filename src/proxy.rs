@@ -10,8 +10,12 @@ use tokio::{io::{AsyncRead, AsyncWrite}, net::TcpSocket, task};
 use std::sync::{Arc};
 use tokio::process::Command;
 use std::collections::{HashMap, VecDeque};
+use std::error::Error;
+use std::time::Duration;
 use tokio::sync::Mutex;
 use lazy_static::lazy_static;
+use tokio::time::timeout;
+
 const MAX_ADDRESSES: usize = 1000;
 
 
@@ -106,26 +110,42 @@ impl Proxy {
         Ok(res)
     }
     async fn manage_address_count(&self, interface: &str) {
-        let mut queue = self.address_queue.lock().await;
-        if queue.len() > MAX_ADDRESSES {
-            let addresses_to_remove = queue.len() - MAX_ADDRESSES;
+        let lock_timeout = Duration::from_secs(5); // 超时设置为5秒
 
-            // Remove only the excess addresses, following FIFO order
-            for _ in 0..addresses_to_remove {
-                if let Some(addr) = queue.pop_front() {
-                    let cmd_str = format!("ip addr del {} dev {}", addr, interface);
-                    self.execute_command_del(cmd_str.clone()).await;
+        match timeout(lock_timeout, self.address_queue.lock()).await {
+            Ok(mut queue) => {
+                if queue.len() > MAX_ADDRESSES {
+                    let addresses_to_remove = queue.len() - MAX_ADDRESSES;
+
+                    // Remove only the excess addresses, following FIFO order
+                    for _ in 0..addresses_to_remove {
+                        if let Some(addr) = queue.pop_front() {
+                            let cmd_str = format!("ip addr del {} dev {}", addr, interface);
+                            if let Err(e) = self.execute_command_del(cmd_str.clone()).await {
+                                eprintln!("Failed to execute command {}: {:?}", cmd_str, e);
+                            }
+                        }
+                    }
                 }
+            }
+            Err(_) => {
+                eprintln!("Failed to acquire lock within timeout period");
+                // 处理超时情况，例如记录日志或执行其他操作
             }
         }
     }
-    async fn execute_command_del(&self, cmd_str: String) {
-        Command::new("sh")
+    async fn execute_command_del(&self, cmd_str: String) -> Result<(), Box<dyn Error>> {
+        let output = Command::new("sh")
             .arg("-c")
             .arg(cmd_str)
             .output()
-            .await
-            .expect("Failed to execute command");
+            .await?;
+
+        if output.status.success() {
+            Ok(())
+        } else {
+            Err(format!("Command failed with status: {:?}", output.status).into())
+        }
     }
 
     async fn execute_command(&self, cmd_str: String)  {
@@ -158,9 +178,13 @@ impl Proxy {
                         let cmd_traceroute_str = format!("traceroute -m 10 -s {} {}", bind_addr.ip(),gateway);
                         self.execute_command(cmd_traceroute_str).await;
                     }
-                    // Add the new address to the queue
-                    let mut queue = self.address_queue.lock().await;
-                    queue.push_back(bind_addr.to_string());
+
+                    {
+                        // Add the new address to the queue
+                        let mut queue = self.address_queue.lock().await;
+                        queue.push_back(bind_addr.to_string());
+                    }
+
 
                     // Check and manage the number of addresses
                     self.manage_address_count(&interface).await;
