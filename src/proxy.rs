@@ -33,9 +33,11 @@ pub async fn start_proxy(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let interface_arc = Arc::new(interface);
     let gateway_arc = Arc::new(gateway);
+    let address_queue = Arc::new(Mutex::new(Default::default()));
     let make_service = make_service_fn(move |_: &AddrStream| {
         let interface_clone = Arc::clone(&interface_arc);
         let gateway_clone = Arc::clone(&gateway_arc);
+        let address_queue = Arc::clone(&address_queue);
         async move {
             let interface_per_request = interface_clone.clone();
             let gateway_per_request = gateway_clone.clone();
@@ -43,7 +45,7 @@ pub async fn start_proxy(
                 Proxy {
                     ipv6: ipv6.into(),
                     prefix_len,
-                    address_queue: Arc::new(Mutex::new(Default::default())),
+                    address_queue: address_queue.clone(),
                 }
                     .proxy(req,is_system_route,(*interface_per_request).clone(),(*gateway_per_request).clone())
             }))
