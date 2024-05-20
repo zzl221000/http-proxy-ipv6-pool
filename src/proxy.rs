@@ -22,6 +22,7 @@ const MAX_ADDRESSES: usize = 1000;
 lazy_static! {
     // 使用全局的 Mutex 包装的 HashMap 来存储网址与 IP 的映射
     static ref IP_MAP: Mutex<HashMap<String, IpAddr>> = Mutex::new(HashMap::new());
+    static ref GLOBAL_ADDRESS_QUEUE: Arc<Mutex<VecDeque<String>>> = Arc::new(Mutex::new(VecDeque::new()));
 }
 
 pub async fn start_proxy(
@@ -33,11 +34,9 @@ pub async fn start_proxy(
 ) -> Result<(), Box<dyn std::error::Error>> {
     let interface_arc = Arc::new(interface);
     let gateway_arc = Arc::new(gateway);
-    let address_queue = Arc::new(Mutex::new(Default::default()));
     let make_service = make_service_fn(move |_: &AddrStream| {
         let interface_clone = Arc::clone(&interface_arc);
         let gateway_clone = Arc::clone(&gateway_arc);
-        let address_queue = Arc::clone(&address_queue);
         async move {
             let interface_per_request = interface_clone.clone();
             let gateway_per_request = gateway_clone.clone();
@@ -45,7 +44,7 @@ pub async fn start_proxy(
                 Proxy {
                     ipv6: ipv6.into(),
                     prefix_len,
-                    address_queue: address_queue.clone(),
+                    address_queue: GLOBAL_ADDRESS_QUEUE.clone(),
                 }
                     .proxy(req,is_system_route,(*interface_per_request).clone(),(*gateway_per_request).clone())
             }))
@@ -102,6 +101,12 @@ impl Proxy {
                 let cmd_traceroute_str = format!("traceroute -m 10 -s {} {}", bind_addr,gateway);
                 self.execute_command(cmd_traceroute_str).await;
             }
+
+                {
+                    // Add the new address to the queue
+                    let mut queue = self.address_queue.lock().await;
+                    queue.push_back(bind_addr.to_string());
+                }
             self.manage_address_count(&*interface).await;
         }
         let client = Client::builder()
