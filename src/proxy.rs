@@ -9,8 +9,8 @@ use std::net::{IpAddr, Ipv6Addr, SocketAddr, ToSocketAddrs};
 use tokio::{io::{AsyncRead, AsyncWrite}, net::TcpSocket, task};
 use std::sync::{Arc};
 use tokio::process::Command;
-use std::collections::HashMap;
-use std::sync::Mutex;
+use std::collections::{HashMap, VecDeque};
+use tokio::sync::Mutex;
 use lazy_static::lazy_static;
 const MAX_ADDRESSES: usize = 1000;
 
@@ -39,6 +39,7 @@ pub async fn start_proxy(
                 Proxy {
                     ipv6: ipv6.into(),
                     prefix_len,
+                    address_queue: Arc::new(Mutex::new(Default::default())),
                 }
                     .proxy(req,is_system_route,(*interface_per_request).clone(),(*gateway_per_request).clone())
             }))
@@ -53,10 +54,11 @@ pub async fn start_proxy(
         .map_err(|err| err.into())
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(crate) struct Proxy {
     pub ipv6: u128,
     pub prefix_len: u8,
+    address_queue: Arc<Mutex<VecDeque<String>>>,
 }
 
 impl Proxy {
@@ -103,37 +105,29 @@ impl Proxy {
         let res = client.request(req).await?;
         Ok(res)
     }
-    async fn manage_address_count(self, interface: &str) {
-        let current_addresses = self.get_current_addresses(interface).await;
-        if current_addresses.len() > MAX_ADDRESSES {
-            let addresses_to_remove = current_addresses.len() - MAX_ADDRESSES;
+    async fn manage_address_count(&self, interface: &str) {
+        let mut queue = self.address_queue.lock().await;
+        if queue.len() > MAX_ADDRESSES {
+            let addresses_to_remove = queue.len() - MAX_ADDRESSES;
 
             // Remove only the excess addresses, following FIFO order
-            for addr in &current_addresses[..addresses_to_remove] {
-                let cmd_str = format!("ip addr del {} dev {}", addr, interface);
-                self.execute_command_del(&cmd_str).await;
+            for _ in 0..addresses_to_remove {
+                if let Some(addr) = queue.pop_front() {
+                    let cmd_str = format!("ip addr del {} dev {}", addr, interface);
+                    self.execute_command_del(cmd_str.clone()).await;
+                }
             }
         }
     }
-    async fn execute_command_del(&self, cmd: &str) {
+    async fn execute_command_del(&self, cmd_str: String) {
         Command::new("sh")
             .arg("-c")
-            .arg(cmd)
+            .arg(cmd_str)
             .output()
             .await
             .expect("Failed to execute command");
     }
-    async fn get_current_addresses(self,interface: &str) -> Vec<String> {
-        let output = Command::new("sh")
-            .arg("-c")
-            .arg(format!("ip addr show dev {} | grep 'inet ' | awk '{{print $2}}'", interface))
-            .output()
-            .await
-            .expect("Failed to execute command");
 
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        stdout.lines().map(|line| line.to_string()).collect()
-    }
     async fn execute_command(&self, cmd_str: String)  {
         println!("{cmd_str} ");
         task::spawn(async move {
@@ -147,7 +141,7 @@ impl Proxy {
         });
 
     }
-    async fn tunnel<A>(self, upgraded: &mut A, addr_str: String,is_system_route: bool,interface: String,gateway: String) -> std::io::Result<()>
+    async fn tunnel<A>(&self, upgraded: &mut A, addr_str: String,is_system_route: bool,interface: String,gateway: String) -> std::io::Result<()>
     where
         A: AsyncRead + AsyncWrite + Unpin + ?Sized,
     {
@@ -164,7 +158,12 @@ impl Proxy {
                         let cmd_traceroute_str = format!("traceroute -m 10 -s {} {}", bind_addr.ip(),gateway);
                         self.execute_command(cmd_traceroute_str).await;
                     }
-                    self.manage_address_count(&*interface).await;
+                    // Add the new address to the queue
+                    let mut queue = self.address_queue.lock().await;
+                    queue.push_back(bind_addr.to_string());
+
+                    // Check and manage the number of addresses
+                    self.manage_address_count(&interface).await;
 
                 }
                 if socket.bind(bind_addr).is_ok() {
@@ -181,6 +180,7 @@ impl Proxy {
 
         Ok(())
     }
+
 }
 
 fn get_rand_ipv6_socket_addr(ipv6: u128, prefix_len: u8) -> SocketAddr {
