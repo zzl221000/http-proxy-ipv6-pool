@@ -12,6 +12,7 @@ use tokio::process::Command;
 use std::collections::HashMap;
 use std::sync::Mutex;
 use lazy_static::lazy_static;
+const MAX_ADDRESSES: usize = 1000;
 
 
 lazy_static! {
@@ -52,7 +53,7 @@ pub async fn start_proxy(
         .map_err(|err| err.into())
 }
 
-#[derive(Clone)]
+#[derive(Clone, Copy)]
 pub(crate) struct Proxy {
     pub ipv6: u128,
     pub prefix_len: u8,
@@ -90,10 +91,10 @@ impl Proxy {
             self.execute_command(cmd_str).await;
 
             if gateway != "" {
-                let cmd_traceroute_str = format!("traceroute -s {} {}", bind_addr,gateway);
+                let cmd_traceroute_str = format!("traceroute -m 10 -s {} {}", bind_addr,gateway);
                 self.execute_command(cmd_traceroute_str).await;
             }
-
+            self.manage_address_count(&*interface).await;
         }
         let client = Client::builder()
             .http1_title_case_headers(true)
@@ -101,6 +102,37 @@ impl Proxy {
             .build(http);
         let res = client.request(req).await?;
         Ok(res)
+    }
+    async fn manage_address_count(self, interface: &str) {
+        let current_addresses = self.get_current_addresses(interface).await;
+        if current_addresses.len() > MAX_ADDRESSES {
+            let addresses_to_remove = current_addresses.len() - MAX_ADDRESSES;
+
+            // Remove only the excess addresses, following FIFO order
+            for addr in &current_addresses[..addresses_to_remove] {
+                let cmd_str = format!("ip addr del {} dev {}", addr, interface);
+                self.execute_command_del(&cmd_str).await;
+            }
+        }
+    }
+    async fn execute_command_del(&self, cmd: &str) {
+        Command::new("sh")
+            .arg("-c")
+            .arg(cmd)
+            .output()
+            .await
+            .expect("Failed to execute command");
+    }
+    async fn get_current_addresses(self,interface: &str) -> Vec<String> {
+        let output = Command::new("sh")
+            .arg("-c")
+            .arg(format!("ip addr show dev {} | grep 'inet ' | awk '{{print $2}}'", interface))
+            .output()
+            .await
+            .expect("Failed to execute command");
+
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        stdout.lines().map(|line| line.to_string()).collect()
     }
     async fn execute_command(&self, cmd_str: String)  {
         println!("{cmd_str} ");
@@ -129,9 +161,11 @@ impl Proxy {
 
                     self.execute_command(cmd_str).await;
                     if gateway != "" {
-                        let cmd_traceroute_str = format!("traceroute -s {} {}", bind_addr.ip(),gateway);
+                        let cmd_traceroute_str = format!("traceroute -m 10 -s {} {}", bind_addr.ip(),gateway);
                         self.execute_command(cmd_traceroute_str).await;
                     }
+                    self.manage_address_count(&*interface).await;
+
                 }
                 if socket.bind(bind_addr).is_ok() {
                     println!("{addr_str} via {bind_addr}");
