@@ -121,6 +121,7 @@ impl Proxy {
 
         match timeout(lock_timeout, self.address_queue.lock()).await {
             Ok(mut queue) => {
+                eprintln!("Acquired lock {}",queue.len());
                 if queue.len() > MAX_ADDRESSES {
                     let addresses_to_remove = queue.len() - MAX_ADDRESSES;
 
