@@ -190,7 +190,7 @@ impl Proxy {
                     {
                         // Add the new address to the queue
                         let mut queue = self.address_queue.lock().await;
-                        queue.push_back(bind_addr.to_string());
+                        queue.push_back(bind_addr.ip().to_string());
                     }
 
 
