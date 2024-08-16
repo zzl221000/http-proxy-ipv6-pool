@@ -16,6 +16,7 @@
 # 编译说明。    
 ```shell
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+. "$HOME/.cargo/env"  # This loads the environment variables
 cargo build #debug
 cargo build --release
 
