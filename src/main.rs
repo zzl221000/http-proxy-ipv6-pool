@@ -3,7 +3,7 @@ mod proxy;
 use cidr::{Ipv4Cidr, Ipv6Cidr};
 use getopts::Options;
 use proxy::start_proxy;
-use std::{env, process::exit};
+use std::{env, process::exit, net::IpAddr};
 
 fn print_usage(program: &str, opts: Options) {
     let brief = format!("Usage: {} [options]", program);
@@ -28,6 +28,12 @@ fn main() {
         "IPv4 Subnet: 192.168.0.0/24",
         "IPv4_SUBNET",
     );
+    opts.optopt(
+        "a",
+        "allowed-ips",
+        "Comma-separated list of allowed IP addresses",
+        "ALLOWED_IPS",
+    );
     opts.optflag("h", "help", "print this help menu");
     opts.optopt("s", "system_route", "Whether to use system routing instead of ndpdd. (Provide network card interface, such as eth0)", "Network Interface");
     opts.optopt("g", "gateway", "Some service providers need to track the route before it takes effect.", "Gateway");
@@ -47,7 +53,7 @@ fn main() {
     let system_route = matches.opt_str("s").unwrap_or("".to_string());
     println!("System route option received: {}", system_route);
 
-    let gateway = matches.opt_str("gateway").unwrap_or("".to_string());
+    let gateway = matches.opt_str("g").unwrap_or("".to_string());
     println!("Gateway: {}", gateway);
 
     let bind_addr = matches.opt_str("b").unwrap_or("0.0.0.0:51080".to_string());
@@ -58,7 +64,17 @@ fn main() {
         .opt_str("v")
         .unwrap_or("192.168.0.0/24".to_string());
 
-    run(bind_addr, system_route, gateway, ipv6_subnet, ipv4_subnet);
+    let allowed_ips_str = matches.opt_str("a").unwrap_or_default();
+    let allowed_ips = parse_allowed_ips(&allowed_ips_str);
+
+    run(bind_addr, system_route, gateway, ipv6_subnet, ipv4_subnet, allowed_ips);
+}
+
+fn parse_allowed_ips(allowed_ips_str: &str) -> Vec<IpAddr> {
+    allowed_ips_str
+        .split(',')
+        .filter_map(|ip_str| ip_str.parse::<IpAddr>().ok())
+        .collect()
 }
 
 #[tokio::main]
@@ -68,6 +84,7 @@ async fn run(
     gateway: String,
     ipv6_subnet: String,
     ipv4_subnet: String,
+    allowed_ips: Vec<IpAddr>,
 ) {
     let ipv6 = match ipv6_subnet.parse::<Ipv6Cidr>() {
         Ok(cidr) => {
@@ -102,11 +119,11 @@ async fn run(
     };
 
     if !system_route.is_empty() {
-        if let Err(e) = start_proxy(bind_addr, true, gateway.clone(), system_route.clone(), ipv6, ipv4).await {
+        if let Err(e) = start_proxy(bind_addr, true, gateway.clone(), system_route.clone(), ipv6, ipv4, allowed_ips).await {
             println!("{}", e);
         }
     } else {
-        if let Err(e) = start_proxy(bind_addr, false, gateway.clone(), system_route.clone(), ipv6, ipv4).await {
+        if let Err(e) = start_proxy(bind_addr, false, gateway.clone(), system_route.clone(), ipv6, ipv4, allowed_ips).await {
             println!("{}", e);
         }
     }

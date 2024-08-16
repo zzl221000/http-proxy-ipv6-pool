@@ -2,7 +2,7 @@ use hyper::{
     client::HttpConnector,
     server::conn::AddrStream,
     service::{make_service_fn, service_fn},
-    Body, Client, Method, Request, Response, Server,
+    Body, Client, Method, Request, Response, Server, StatusCode,
 };
 use rand::{random, Rng};
 use std::net::{IpAddr, Ipv6Addr, Ipv4Addr, SocketAddr, ToSocketAddrs};
@@ -16,13 +16,13 @@ use tokio::sync::Mutex;
 use lazy_static::lazy_static;
 use tokio::time::timeout;
 
+
 const MAX_ADDRESSES: usize = 1000;
 
 lazy_static! {
     static ref IP_MAP: Mutex<HashMap<String, IpAddr>> = Mutex::new(HashMap::new());
     static ref GLOBAL_ADDRESS_QUEUE: Arc<Mutex<VecDeque<String>>> = Arc::new(Mutex::new(VecDeque::new()));
 }
-
 pub async fn start_proxy(
     listen_addr: SocketAddr,
     is_system_route: bool,
@@ -30,25 +30,39 @@ pub async fn start_proxy(
     interface: String,
     (ipv6, ipv6_prefix_len): (Ipv6Addr, u8),
     (ipv4, ipv4_prefix_len): (Ipv4Addr, u8),
+    allowed_ips: Vec<IpAddr>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let interface_arc = Arc::new(interface);
     let gateway_arc = Arc::new(gateway);
-    let make_service = make_service_fn(move |_: &AddrStream| {
+    let allowed_ips_arc = Arc::new(allowed_ips);
+
+    let make_service = make_service_fn(move |conn: &AddrStream| {
+        let remote_addr = conn.remote_addr();
         let interface_clone = Arc::clone(&interface_arc);
         let gateway_clone = Arc::clone(&gateway_arc);
+        let allowed_ips_clone = Arc::clone(&allowed_ips_arc);
+
         async move {
-            let interface_per_request = interface_clone.clone();
-            let gateway_per_request = gateway_clone.clone();
-            Ok::<_, hyper::Error>(service_fn(move |req| {
+            let service = service_fn(move |mut req: Request<Body>| {
+                // 将客户端的 SocketAddr 添加到请求的扩展中
+                req.extensions_mut().insert(remote_addr);
+
+                let interface_per_request = interface_clone.clone();
+                let gateway_per_request = gateway_clone.clone();
+                let allowed_ips_per_request = allowed_ips_clone.clone();
+
                 Proxy {
                     ipv6: ipv6.into(),
                     ipv6_prefix_len,
                     ipv4: ipv4.into(),
                     ipv4_prefix_len,
                     address_queue: GLOBAL_ADDRESS_QUEUE.clone(),
+                    allowed_ips: allowed_ips_per_request,
                 }
                     .proxy(req, is_system_route, (*interface_per_request).clone(), (*gateway_per_request).clone())
-            }))
+            });
+
+            Ok::<_, hyper::Error>(service)
         }
     });
 
@@ -67,10 +81,33 @@ pub(crate) struct Proxy {
     pub ipv4: u32,
     pub ipv4_prefix_len: u8,
     address_queue: Arc<Mutex<VecDeque<String>>>,
+    allowed_ips: Arc<Vec<IpAddr>>,
 }
 
 impl Proxy {
     pub(crate) async fn proxy(self, req: Request<Body>, is_system_route: bool, interface: String, gateway: String) -> Result<Response<Body>, hyper::Error> {
+        let client_ip: Option<IpAddr> = if let Some(remote_addr) = req.extensions().get::<SocketAddr>() {
+            Some(remote_addr.ip())
+        } else if let Some(forwarded_for) = req.headers().get("x-forwarded-for") {
+            forwarded_for.to_str().ok().and_then(|ip_str| ip_str.parse().ok())
+        } else if let Some(real_ip) = req.headers().get("x-real-ip") {
+            real_ip.to_str().ok().and_then(|ip_str| ip_str.parse().ok())
+        } else {
+            None
+        };
+
+        if let Some(client_ip) = client_ip {
+            println!("Client IP: {}", client_ip);
+            if !self.allowed_ips.contains(&client_ip) {
+                println!("Access denied for IP: {}", client_ip);
+                return Ok(Response::builder()
+                    .status(StatusCode::FORBIDDEN)
+                    .body(Body::from("Access denied"))
+                    .unwrap());
+            }
+        } else {
+            println!("Failed to get client IP address");
+        }
         match if req.method() == Method::CONNECT {
             self.process_connect(req, is_system_route, interface.clone(), gateway.clone()).await
         } else {
