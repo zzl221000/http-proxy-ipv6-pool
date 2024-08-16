@@ -122,7 +122,7 @@ impl Proxy {
         }
 
         // Define a timeout duration
-        let timeout_duration = Duration::from_secs(10); // 30 seconds timeout
+        let timeout_duration = Duration::from_secs(10); // 10 seconds timeout
 
         match timeout(timeout_duration, async {
             if req.method() == Method::CONNECT {
@@ -134,7 +134,13 @@ impl Proxy {
             .await
         {
             Ok(Ok(resp)) => Ok(resp),
-            Ok(Err(e)) => Err(e),
+            Ok(Err(e)) => {
+                println!("Error processing request: {:?}", e);
+                Ok(Response::builder()
+                    .status(StatusCode::SERVICE_UNAVAILABLE)
+                    .body(Body::from("Service Unavailable"))
+                    .unwrap())
+            }
             Err(_) => {
                 // Timeout occurred
                 println!("Request timed out");
@@ -145,13 +151,40 @@ impl Proxy {
             }
         }
     }
-    async fn process_connect(self, req: Request<Body>, is_system_route: bool, interface: String, gateway: String) -> Result<Response<Body>, hyper::Error> {
-        tokio::task::spawn(async move {
-            let remote_addr = req.uri().authority().map(|auth| auth.to_string()).unwrap();
-            let mut upgraded = hyper::upgrade::on(req).await.unwrap();
-            self.tunnel(&mut upgraded, remote_addr, is_system_route, interface.clone(), gateway).await
-        });
-        Ok(Response::new(Body::empty()))
+
+    async fn process_connect(
+        self,
+        req: Request<Body>,
+        is_system_route: bool,
+        interface: String,
+        gateway: String,
+    ) -> Result<Response<Body>, hyper::Error> {
+        let remote_addr = req.uri().authority().map(|auth| auth.to_string()).unwrap();
+        let mut upgraded = match hyper::upgrade::on(req).await {
+            Ok(upgraded) => upgraded,
+            Err(e) => {
+                println!("Failed to upgrade connection: {:?}", e);
+                return Ok(Response::builder()
+                    .status(StatusCode::SERVICE_UNAVAILABLE)
+                    .body(Body::from("Service Unavailable"))
+                    .unwrap());
+            }
+        };
+
+        // Attempt to process the tunnel connection
+        match self
+            .tunnel(&mut upgraded, remote_addr, is_system_route, interface.clone(), gateway)
+            .await
+        {
+            Ok(_) => Ok(Response::new(Body::empty())),
+            Err(e) => {
+                println!("Error in tunnel: {:?}", e);
+                Ok(Response::builder()
+                    .status(StatusCode::SERVICE_UNAVAILABLE)
+                    .body(Body::from("Service Unavailable"))
+                    .unwrap())
+            }
+        }
     }
 
     async fn process_request(
@@ -161,7 +194,7 @@ impl Proxy {
         interface: String,
         gateway: String,
     ) -> Result<Response<Body>, hyper::Error> {
-        let timeout_duration = Duration::from_secs(10); // 30 seconds timeout
+        let timeout_duration = Duration::from_secs(10); // 10 seconds timeout
 
         let bind_addr = if req.uri().scheme_str() == Some("https") {
             get_rand_ipv6(self.ipv6, self.ipv6_prefix_len)
@@ -207,7 +240,13 @@ impl Proxy {
             .await
         {
             Ok(Ok(res)) => Ok(res),
-            Ok(Err(e)) => Err(e),
+            Ok(Err(e)) => {
+                println!("Error processing HTTP request: {:?}", e);
+                Ok(Response::builder()
+                    .status(StatusCode::SERVICE_UNAVAILABLE)
+                    .body(Body::from("Service Unavailable"))
+                    .unwrap())
+            }
             Err(_) => {
                 // Timeout occurred
                 println!("Request processing timed out");
@@ -282,7 +321,7 @@ impl Proxy {
     where
         A: AsyncRead + AsyncWrite + Unpin + ?Sized,
     {
-        let timeout_duration = Duration::from_secs(10); // 30 seconds timeout
+        let timeout_duration = Duration::from_secs(10); // 10 seconds timeout
 
         if let Ok(addrs) = addr_str.to_socket_addrs() {
             for addr in addrs {
