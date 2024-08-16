@@ -15,7 +15,7 @@ use std::time::Duration;
 use tokio::sync::Mutex;
 use lazy_static::lazy_static;
 use tokio::time::timeout;
-
+use std::io;
 
 const MAX_ADDRESSES: usize = 1000;
 
@@ -223,16 +223,26 @@ impl Proxy {
         });
     }
 
-    async fn tunnel<A>(&self, upgraded: &mut A, addr_str: String, is_system_route: bool, interface: String, gateway: String) -> std::io::Result<()>
+    async fn tunnel<A>(&self, upgraded: &mut A, addr_str: String, is_system_route: bool, interface: String, gateway: String) -> io::Result<()>
     where
         A: AsyncRead + AsyncWrite + Unpin + ?Sized,
     {
         if let Ok(addrs) = addr_str.to_socket_addrs() {
             for addr in addrs {
-                let socket = TcpSocket::new_v6()?;
-                let bind_addr = get_rand_ipv6_socket_addr(self.ipv6, self.ipv6_prefix_len);
+                // 根据 addr 的类型选择使用 IPv4 还是 IPv6
+                let socket = match addr {
+                    SocketAddr::V4(_) => TcpSocket::new_v4()?,
+                    SocketAddr::V6(_) => TcpSocket::new_v6()?,
+                };
+
+                // 根据地址类型生成随机 IP 地址
+                let bind_addr = match addr {
+                    SocketAddr::V4(_) => get_rand_ipv4_socket_addr(self.ipv4, self.ipv4_prefix_len),
+                    SocketAddr::V6(_) => get_rand_ipv6_socket_addr(self.ipv6, self.ipv6_prefix_len),
+                };
+
                 if is_system_route {
-                    let cmd_str = format!("ip addr add {}/{} dev {}", bind_addr.ip(), self.ipv6_prefix_len, interface);
+                    let cmd_str = format!("ip addr add {}/{} dev {}", bind_addr.ip(), if bind_addr.is_ipv6() { self.ipv6_prefix_len } else { self.ipv4_prefix_len }, interface);
 
                     self.execute_command(cmd_str).await;
                     if !gateway.is_empty() {
@@ -247,6 +257,7 @@ impl Proxy {
 
                     self.manage_address_count(&interface).await;
                 }
+
                 if socket.bind(bind_addr).is_ok() {
                     println!("{addr_str} via {bind_addr}");
                     if let Ok(mut server) = socket.connect(addr).await {
@@ -263,6 +274,10 @@ impl Proxy {
     }
 }
 
+fn get_rand_ipv4_socket_addr(ipv4: u32, prefix_len: u8) -> SocketAddr {
+    let mut rng = rand::thread_rng();
+    SocketAddr::new(get_rand_ipv4(ipv4, prefix_len), rng.gen::<u16>())
+}
 fn get_rand_ipv6_socket_addr(ipv6: u128, prefix_len: u8) -> SocketAddr {
     let mut rng = rand::thread_rng();
     SocketAddr::new(get_rand_ipv6(ipv6, prefix_len), rng.gen::<u16>())
