@@ -64,8 +64,8 @@ fn main() {
         .opt_str("v")
         .unwrap_or("192.168.0.0/24".to_string());
 
-    let allowed_ips_str = matches.opt_str("a").unwrap_or_default();
-    let allowed_ips = parse_allowed_ips(&allowed_ips_str);
+    let allowed_ips = matches.opt_str("a")
+        .map(|s| parse_allowed_ips(&s)); // 如果没有 -a 参数，allowed_ips 将是 None
 
     run(bind_addr, system_route, gateway, ipv6_subnet, ipv4_subnet, allowed_ips);
 }
@@ -84,7 +84,7 @@ async fn run(
     gateway: String,
     ipv6_subnet: String,
     ipv4_subnet: String,
-    allowed_ips: Vec<IpAddr>,
+    allowed_ips: Option<Vec<IpAddr>>,  // 修改为 Option<Vec<IpAddr>>
 ) {
     let ipv6 = match ipv6_subnet.parse::<Ipv6Cidr>() {
         Ok(cidr) => {

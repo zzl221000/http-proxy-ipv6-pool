@@ -8,9 +8,9 @@
 ```shell
 ./http-proxy-ipv6-pool -b 127.0.0.1:51080 -i 2a12:bec0:165:106::/64 -s eth0 -g 2001:4860:4860::8888
 ```
-增加了ipv4的支持
+增加了ipv4的支持 我允许IP设置
 ```shell
-./http-proxy-ipv6-pool  -b 127.0.0.1:51080 -v 192.168.1.203
+./http-proxy-ipv6-pool  -b 127.0.0.1:51080 -v 192.168.1.203 -a 127.0.0.1
 ```
 
 # Http Proxy IPv6 Pool

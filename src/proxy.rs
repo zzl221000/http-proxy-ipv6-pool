@@ -23,6 +23,7 @@ lazy_static! {
     static ref IP_MAP: Mutex<HashMap<String, IpAddr>> = Mutex::new(HashMap::new());
     static ref GLOBAL_ADDRESS_QUEUE: Arc<Mutex<VecDeque<String>>> = Arc::new(Mutex::new(VecDeque::new()));
 }
+
 pub async fn start_proxy(
     listen_addr: SocketAddr,
     is_system_route: bool,
@@ -30,17 +31,19 @@ pub async fn start_proxy(
     interface: String,
     (ipv6, ipv6_prefix_len): (Ipv6Addr, u8),
     (ipv4, ipv4_prefix_len): (Ipv4Addr, u8),
-    allowed_ips: Vec<IpAddr>,
+    allowed_ips: Option<Vec<IpAddr>>,  // 修改为 Option<Vec<IpAddr>>
 ) -> Result<(), Box<dyn std::error::Error>> {
     let interface_arc = Arc::new(interface);
     let gateway_arc = Arc::new(gateway);
-    let allowed_ips_arc = Arc::new(allowed_ips);
+    let allowed_ips_arc = allowed_ips.map(Arc::new);  // 将 allowed_ips 包装为 Option<Arc<Vec<IpAddr>>>
 
     let make_service = make_service_fn(move |conn: &AddrStream| {
         let remote_addr = conn.remote_addr();
         let interface_clone = Arc::clone(&interface_arc);
         let gateway_clone = Arc::clone(&gateway_arc);
-        let allowed_ips_clone = Arc::clone(&allowed_ips_arc);
+
+        // 直接使用 allowed_ips_arc，而不是调用 Arc::clone
+        let allowed_ips_clone = allowed_ips_arc.clone();
 
         async move {
             let service = service_fn(move |mut req: Request<Body>| {
@@ -49,7 +52,6 @@ pub async fn start_proxy(
 
                 let interface_per_request = interface_clone.clone();
                 let gateway_per_request = gateway_clone.clone();
-                let allowed_ips_per_request = allowed_ips_clone.clone();
 
                 Proxy {
                     ipv6: ipv6.into(),
@@ -57,7 +59,7 @@ pub async fn start_proxy(
                     ipv4: ipv4.into(),
                     ipv4_prefix_len,
                     address_queue: GLOBAL_ADDRESS_QUEUE.clone(),
-                    allowed_ips: allowed_ips_per_request,
+                    allowed_ips: allowed_ips_clone.clone(),  // 直接传递 Option<Arc<Vec<IpAddr>>>
                 }
                     .proxy(req, is_system_route, (*interface_per_request).clone(), (*gateway_per_request).clone())
             });
@@ -81,7 +83,7 @@ pub(crate) struct Proxy {
     pub ipv4: u32,
     pub ipv4_prefix_len: u8,
     address_queue: Arc<Mutex<VecDeque<String>>>,
-    allowed_ips: Arc<Vec<IpAddr>>,
+    allowed_ips: Option<Arc<Vec<IpAddr>>>,  // 修改为 Option<Arc<Vec<IpAddr>>>
 }
 
 impl Proxy {
@@ -98,16 +100,21 @@ impl Proxy {
 
         if let Some(client_ip) = client_ip {
             println!("Client IP: {}", client_ip);
-            if !self.allowed_ips.contains(&client_ip) {
-                println!("Access denied for IP: {}", client_ip);
-                return Ok(Response::builder()
-                    .status(StatusCode::FORBIDDEN)
-                    .body(Body::from("Access denied"))
-                    .unwrap());
+
+            // 如果设置了 allowed_ips 列表，则检查客户端 IP 是否在列表中
+            if let Some(allowed_ips) = &self.allowed_ips {
+                if !allowed_ips.contains(&client_ip) {
+                    println!("Access denied for IP: {}", client_ip);
+                    return Ok(Response::builder()
+                        .status(StatusCode::FORBIDDEN)
+                        .body(Body::from("Access denied"))
+                        .unwrap());
+                }
             }
         } else {
             println!("Failed to get client IP address");
         }
+
         match if req.method() == Method::CONNECT {
             self.process_connect(req, is_system_route, interface.clone(), gateway.clone()).await
         } else {
