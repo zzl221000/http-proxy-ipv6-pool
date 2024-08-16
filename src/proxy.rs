@@ -87,7 +87,13 @@ pub(crate) struct Proxy {
 }
 
 impl Proxy {
-    pub(crate) async fn proxy(self, req: Request<Body>, is_system_route: bool, interface: String, gateway: String) -> Result<Response<Body>, hyper::Error> {
+    pub(crate) async fn proxy(
+        self,
+        req: Request<Body>,
+        is_system_route: bool,
+        interface: String,
+        gateway: String,
+    ) -> Result<Response<Body>, hyper::Error> {
         let client_ip: Option<IpAddr> = if let Some(remote_addr) = req.extensions().get::<SocketAddr>() {
             Some(remote_addr.ip())
         } else if let Some(forwarded_for) = req.headers().get("x-forwarded-for") {
@@ -115,16 +121,30 @@ impl Proxy {
             println!("Failed to get client IP address");
         }
 
-        match if req.method() == Method::CONNECT {
-            self.process_connect(req, is_system_route, interface.clone(), gateway.clone()).await
-        } else {
-            self.process_request(req, is_system_route, interface.clone(), gateway.clone()).await
-        } {
-            Ok(resp) => Ok(resp),
-            Err(e) => Err(e),
+        // Define a timeout duration
+        let timeout_duration = Duration::from_secs(10); // 30 seconds timeout
+
+        match timeout(timeout_duration, async {
+            if req.method() == Method::CONNECT {
+                self.process_connect(req, is_system_route, interface.clone(), gateway.clone()).await
+            } else {
+                self.process_request(req, is_system_route, interface.clone(), gateway.clone()).await
+            }
+        })
+            .await
+        {
+            Ok(Ok(resp)) => Ok(resp),
+            Ok(Err(e)) => Err(e),
+            Err(_) => {
+                // Timeout occurred
+                println!("Request timed out");
+                Ok(Response::builder()
+                    .status(StatusCode::SERVICE_UNAVAILABLE)
+                    .body(Body::from("Service Unavailable"))
+                    .unwrap())
+            }
         }
     }
-
     async fn process_connect(self, req: Request<Body>, is_system_route: bool, interface: String, gateway: String) -> Result<Response<Body>, hyper::Error> {
         tokio::task::spawn(async move {
             let remote_addr = req.uri().authority().map(|auth| auth.to_string()).unwrap();
@@ -134,7 +154,15 @@ impl Proxy {
         Ok(Response::new(Body::empty()))
     }
 
-    async fn process_request(self, req: Request<Body>, is_system_route: bool, interface: String, gateway: String) -> Result<Response<Body>, hyper::Error> {
+    async fn process_request(
+        self,
+        req: Request<Body>,
+        is_system_route: bool,
+        interface: String,
+        gateway: String,
+    ) -> Result<Response<Body>, hyper::Error> {
+        let timeout_duration = Duration::from_secs(10); // 30 seconds timeout
+
         let bind_addr = if req.uri().scheme_str() == Some("https") {
             get_rand_ipv6(self.ipv6, self.ipv6_prefix_len)
         } else {
@@ -146,7 +174,12 @@ impl Proxy {
         println!("{} via {bind_addr}", req.uri().host().unwrap_or_default());
 
         if is_system_route {
-            let cmd_str = format!("ip addr add {}/{} dev {}", bind_addr, if bind_addr.is_ipv6() { self.ipv6_prefix_len } else { self.ipv4_prefix_len }, interface);
+            let cmd_str = format!(
+                "ip addr add {}/{} dev {}",
+                bind_addr,
+                if bind_addr.is_ipv6() { self.ipv6_prefix_len } else { self.ipv4_prefix_len },
+                interface
+            );
             self.execute_command(cmd_str).await;
 
             if !gateway.is_empty() {
@@ -162,13 +195,28 @@ impl Proxy {
             self.manage_address_count(&interface).await;
         }
 
-        let client = Client::builder()
-            .http1_title_case_headers(true)
-            .http1_preserve_header_case(true)
-            .build(http);
+        // Apply timeout to the HTTP request process
+        match timeout(timeout_duration, async {
+            let client = Client::builder()
+                .http1_title_case_headers(true)
+                .http1_preserve_header_case(true)
+                .build(http);
 
-        let res = client.request(req).await?;
-        Ok(res)
+            client.request(req).await
+        })
+            .await
+        {
+            Ok(Ok(res)) => Ok(res),
+            Ok(Err(e)) => Err(e),
+            Err(_) => {
+                // Timeout occurred
+                println!("Request processing timed out");
+                Ok(Response::builder()
+                    .status(StatusCode::SERVICE_UNAVAILABLE)
+                    .body(Body::from("Service Unavailable"))
+                    .unwrap())
+            }
+        }
     }
 
     async fn manage_address_count(&self, interface: &str) {
@@ -223,10 +271,19 @@ impl Proxy {
         });
     }
 
-    async fn tunnel<A>(&self, upgraded: &mut A, addr_str: String, is_system_route: bool, interface: String, gateway: String) -> io::Result<()>
+    async fn tunnel<A>(
+        &self,
+        upgraded: &mut A,
+        addr_str: String,
+        is_system_route: bool,
+        interface: String,
+        gateway: String,
+    ) -> io::Result<()>
     where
         A: AsyncRead + AsyncWrite + Unpin + ?Sized,
     {
+        let timeout_duration = Duration::from_secs(10); // 30 seconds timeout
+
         if let Ok(addrs) = addr_str.to_socket_addrs() {
             for addr in addrs {
                 // 根据 addr 的类型选择使用 IPv4 还是 IPv6
@@ -242,11 +299,20 @@ impl Proxy {
                 };
 
                 if is_system_route {
-                    let cmd_str = format!("ip addr add {}/{} dev {}", bind_addr.ip(), if bind_addr.is_ipv6() { self.ipv6_prefix_len } else { self.ipv4_prefix_len }, interface);
+                    let cmd_str = format!(
+                        "ip addr add {}/{} dev {}",
+                        bind_addr.ip(),
+                        if bind_addr.is_ipv6() { self.ipv6_prefix_len } else { self.ipv4_prefix_len },
+                        interface
+                    );
 
                     self.execute_command(cmd_str).await;
                     if !gateway.is_empty() {
-                        let cmd_traceroute_str = format!("traceroute -m 10 -s {} {}", bind_addr.ip(), gateway);
+                        let cmd_traceroute_str = format!(
+                            "traceroute -m 10 -s {} {}",
+                            bind_addr.ip(),
+                            gateway
+                        );
                         self.execute_command(cmd_traceroute_str).await;
                     }
 
@@ -258,12 +324,23 @@ impl Proxy {
                     self.manage_address_count(&interface).await;
                 }
 
-                if socket.bind(bind_addr).is_ok() {
-                    println!("{addr_str} via {bind_addr}");
-                    if let Ok(mut server) = socket.connect(addr).await {
-                        tokio::io::copy_bidirectional(upgraded, &mut server).await?;
-                        return Ok(());
+                // Apply timeout to the binding, connection, and data transfer process
+                if let Ok(result) = timeout(timeout_duration, async {
+                    if socket.bind(bind_addr).is_ok() {
+                        println!("{addr_str} via {bind_addr}");
+                        if let Ok(mut server) = socket.connect(addr).await {
+                            tokio::io::copy_bidirectional(upgraded, &mut server).await?;
+                            return Ok(());
+                        }
                     }
+                    Err(io::Error::new(io::ErrorKind::Other, "Failed to bind or connect"))
+                })
+                    .await
+                {
+                    return result;
+                } else {
+                    println!("Timeout occurred while handling {}", addr_str);
+                    return Err(io::Error::new(io::ErrorKind::TimedOut, "Operation timed out"));
                 }
             }
         } else {
