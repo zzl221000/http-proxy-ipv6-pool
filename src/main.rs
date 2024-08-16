@@ -1,10 +1,9 @@
 mod proxy;
 
-use cidr::Ipv6Cidr;
+use cidr::{Ipv4Cidr, Ipv6Cidr};
 use getopts::Options;
 use proxy::start_proxy;
 use std::{env, process::exit};
-
 
 fn print_usage(program: &str, opts: Options) {
     let brief = format!("Usage: {} [options]", program);
@@ -23,6 +22,12 @@ fn main() {
         "IPv6 Subnet: 2001:19f0:6001:48e4::/64",
         "IPv6_SUBNET",
     );
+    opts.optopt(
+        "v",
+        "ipv4-subnet",
+        "IPv4 Subnet: 192.168.0.0/24",
+        "IPv4_SUBNET",
+    );
     opts.optflag("h", "help", "print this help menu");
     opts.optopt("s", "system_route", "Whether to use system routing instead of ndpdd. (Provide network card interface, such as eth0)", "Network Interface");
     opts.optopt("g", "gateway", "Some service providers need to track the route before it takes effect.", "Gateway");
@@ -39,24 +44,31 @@ fn main() {
         return;
     }
 
-
     let system_route = matches.opt_str("s").unwrap_or("".to_string());
     println!("System route option received: {}", system_route);
-
 
     let gateway = matches.opt_str("gateway").unwrap_or("".to_string());
     println!("Gateway: {}", gateway);
 
-
     let bind_addr = matches.opt_str("b").unwrap_or("0.0.0.0:51080".to_string());
-    let ipve_subnet = matches
+    let ipv6_subnet = matches
         .opt_str("i")
         .unwrap_or("2001:19f0:6001:48e4::/64".to_string());
-    run(bind_addr,system_route, gateway,ipve_subnet)
+    let ipv4_subnet = matches
+        .opt_str("v")
+        .unwrap_or("192.168.0.0/24".to_string());
+
+    run(bind_addr, system_route, gateway, ipv6_subnet, ipv4_subnet);
 }
 
 #[tokio::main]
-async fn run(bind_addr: String,system_route: String, gateway: String, ipv6_subnet: String) {
+async fn run(
+    bind_addr: String,
+    system_route: String,
+    gateway: String,
+    ipv6_subnet: String,
+    ipv4_subnet: String,
+) {
     let ipv6 = match ipv6_subnet.parse::<Ipv6Cidr>() {
         Ok(cidr) => {
             let a = cidr.first_address();
@@ -69,6 +81,18 @@ async fn run(bind_addr: String,system_route: String, gateway: String, ipv6_subne
         }
     };
 
+    let ipv4 = match ipv4_subnet.parse::<Ipv4Cidr>() {
+        Ok(cidr) => {
+            let a = cidr.first_address();
+            let b = cidr.network_length();
+            (a, b)
+        }
+        Err(_) => {
+            println!("invalid IPv4 subnet");
+            exit(1);
+        }
+    };
+
     let bind_addr = match bind_addr.parse() {
         Ok(b) => b,
         Err(e) => {
@@ -76,14 +100,14 @@ async fn run(bind_addr: String,system_route: String, gateway: String, ipv6_subne
             return;
         }
     };
-    if system_route != "" {
-        if let Err(e) = start_proxy(bind_addr,true,gateway.clone(),system_route.clone(), ipv6).await {
+
+    if !system_route.is_empty() {
+        if let Err(e) = start_proxy(bind_addr, true, gateway.clone(), system_route.clone(), ipv6, ipv4).await {
             println!("{}", e);
         }
-    }else {
-        if let Err(e) = start_proxy(bind_addr,false,gateway.clone(),system_route.clone(), ipv6).await {
+    } else {
+        if let Err(e) = start_proxy(bind_addr, false, gateway.clone(), system_route.clone(), ipv6, ipv4).await {
             println!("{}", e);
         }
     }
-
 }
