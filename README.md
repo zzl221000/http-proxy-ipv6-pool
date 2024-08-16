@@ -13,6 +13,14 @@
 ./http-proxy-ipv6-pool  -b 127.0.0.1:51080 -v 192.168.1.203 -a 127.0.0.1
 ```
 
+# 编译说明。    
+```shell
+curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
+cargo build #debug
+cargo build --release
+
+```
+
 # Http Proxy IPv6 Pool
 
 Make every request from a separate IPv6 address.
