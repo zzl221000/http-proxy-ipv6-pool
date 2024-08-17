@@ -178,6 +178,7 @@ impl Proxy {
             }
         };
 
+        // 异步处理隧道连接
         let status = Arc::new(Mutex::new(None));
 
         let status_clone = Arc::clone(&status);
@@ -210,8 +211,6 @@ impl Proxy {
                 .unwrap()),
             None => Ok(Response::new(Body::empty())),
         }
-
-        // Ok(Response::new(Body::empty()))
     }
 
     async fn tunnel<A>(
@@ -301,6 +300,7 @@ impl Proxy {
                 Err(io::Error::new(io::ErrorKind::TimedOut, "Data transfer timed out"))
             }
         }
+
     }
 
 
