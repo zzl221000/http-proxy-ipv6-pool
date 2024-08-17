@@ -229,7 +229,7 @@ impl Proxy {
                             return Ok(());
                         }
                     }
-                    Err(io::Error::new(io::ErrorKind::Other, "Failed to bind or connect"))
+                    return Err(io::Error::new(io::ErrorKind::Other, "Failed to bind or connect"))
                 })
                     .await;
 
