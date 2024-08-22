@@ -37,6 +37,11 @@ jobs:
           gcc --version
           which x86_64-w64-mingw32-gcc
 
+      - name: Install macOS target (macOS only)
+        if: runner.os == 'macOS'
+        run: |
+          rustup target add x86_64-apple-darwin
+
       - name: Build project
         run: cargo build --release --target ${{ matrix.target }}
 
@@ -45,4 +50,3 @@ jobs:
         with:
           name: ${{ matrix.target }}-release
           path: target/${{ matrix.target }}/release/
-
