@@ -11,7 +11,7 @@ jobs:
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
-        target: [x86_64-unknown-linux-gnu, x86_64-pc-windows-msvc, x86_64-apple-darwin]
+        target: [x86_64-unknown-linux-gnu, x86_64-pc-windows-gnu, x86_64-apple-darwin]
 
     steps:
       - name: Checkout code
@@ -20,9 +20,16 @@ jobs:
       - name: Install Rust
         uses: actions-rs/toolchain@v1
         with:
-          toolchain: 1.74.0
+          toolchain: stable
           target: ${{ matrix.target }}
           override: true
+
+      - name: Setup MinGW (Windows only)
+        if: runner.os == 'Windows'
+        run: |
+          choco install mingw
+          set PATH=C:\tools\mingw64\bin;%PATH%
+          rustup target add x86_64-pc-windows-gnu
 
       - name: Build project
         run: cargo build --release --target ${{ matrix.target }}
@@ -32,24 +39,4 @@ jobs:
         with:
           name: ${{ matrix.target }}-release
           path: target/${{ matrix.target }}/release/
-
-  release:
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - name: Download artifacts
-        uses: actions/download-artifact@v3
-        with:
-          name: ${{ matrix.target }}-release
-          path: ./
-
-      - name: Create Release
-        uses: softprops/action-gh-release@v1
-        with:
-          files: |
-            target/x86_64-unknown-linux-gnu/release/*
-            target/x86_64-pc-windows-msvc/release/*
-            target/x86_64-apple-darwin/release/*
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
