@@ -35,7 +35,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v3
         with:
-          name: ${{ matrix.target }}-release  # 工件名需要包含目标名称以保持唯一性
+          name: ${{ matrix.target }}-release
           path: target/${{ matrix.target }}/release/
 
   release:
@@ -48,20 +48,25 @@ jobs:
       - name: Download x86_64 artifacts
         uses: actions/download-artifact@v3
         with:
-          name: x86_64-unknown-linux-gnu-release  # 需要与构建阶段上传的工件名一致
+          name: x86_64-unknown-linux-gnu-release
           path: ./artifacts/x86_64
 
       - name: Download i686 artifacts
         uses: actions/download-artifact@v3
         with:
-          name: i686-unknown-linux-gnu-release  # 需要与构建阶段上传的工件名一致
+          name: i686-unknown-linux-gnu-release
           path: ./artifacts/i686
+
+      - name: Rename artifacts for release
+        run: |
+          mv artifacts/x86_64/http_proxy_ipv6_pool artifacts/x86_64/http_proxy_ipv6_pool_x86_64
+          mv artifacts/i686/http_proxy_ipv6_pool artifacts/i686/http_proxy_ipv6_pool_i686
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
         with:
           files: |
-            artifacts/x86_64/*
-            artifacts/i686/*
+            artifacts/x86_64/http_proxy_ipv6_pool_x86_64
+            artifacts/i686/http_proxy_ipv6_pool_i686
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
