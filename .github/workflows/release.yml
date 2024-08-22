@@ -32,41 +32,13 @@ jobs:
       - name: Build project
         run: cargo build --release --target ${{ matrix.target }}
 
+      - name: List files after build
+        run: |
+          echo "Listing files in target/${{ matrix.target }}/release:"
+          ls -al target/${{ matrix.target }}/release/
+
       - name: Upload artifact
         uses: actions/upload-artifact@v3
         with:
           name: ${{ matrix.target }}-release
           path: target/${{ matrix.target }}/release/
-
-  release:
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v3
-
-      - name: Download x86_64 artifacts
-        uses: actions/download-artifact@v3
-        with:
-          name: x86_64-unknown-linux-gnu-release
-          path: ./artifacts/x86_64
-
-      - name: Download i686 artifacts
-        uses: actions/download-artifact@v3
-        with:
-          name: i686-unknown-linux-gnu-release
-          path: ./artifacts/i686
-
-      - name: Rename artifacts for release
-        run: |
-          mv artifacts/x86_64/http_proxy_ipv6_pool artifacts/x86_64/http_proxy_ipv6_pool_x86_64
-          mv artifacts/i686/http_proxy_ipv6_pool artifacts/i686/http_proxy_ipv6_pool_i686
-
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v1
-        with:
-          files: |
-            artifacts/x86_64/http_proxy_ipv6_pool_x86_64
-            artifacts/i686/http_proxy_ipv6_pool_i686
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
