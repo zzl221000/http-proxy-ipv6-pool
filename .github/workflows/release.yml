@@ -21,7 +21,6 @@ jobs:
         uses: actions-rs/toolchain@v1
         with:
           toolchain: 1.74.0
-          toolchain: stable
           target: ${{ matrix.target }}
           override: true
 
