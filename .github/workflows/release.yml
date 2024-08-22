@@ -3,7 +3,7 @@ name: Build and Release
 on:
   push:
     tags:
-      - 'v*'  # 仅在推送版本标签时触发
+      - 'v*'
 
 jobs:
   build:
@@ -35,7 +35,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-artifact@v3
         with:
-          name: ${{ matrix.target }}-release
+          name: ${{ matrix.target }}-release  # 工件名需要包含目标名称以保持唯一性
           path: target/${{ matrix.target }}/release/
 
   release:
@@ -45,16 +45,23 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v3
 
-      - name: Download artifacts
+      - name: Download x86_64 artifacts
         uses: actions/download-artifact@v3
         with:
-          name: ${{ matrix.target }}-release
+          name: x86_64-unknown-linux-gnu-release  # 需要与构建阶段上传的工件名一致
+          path: ./artifacts/x86_64
+
+      - name: Download i686 artifacts
+        uses: actions/download-artifact@v3
+        with:
+          name: i686-unknown-linux-gnu-release  # 需要与构建阶段上传的工件名一致
+          path: ./artifacts/i686
 
       - name: Create GitHub Release
         uses: softprops/action-gh-release@v1
         with:
           files: |
-            target/x86_64-unknown-linux-gnu/release/*
-            target/i686-unknown-linux-gnu/release/*
+            artifacts/x86_64/*
+            artifacts/i686/*
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
