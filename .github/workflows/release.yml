@@ -24,12 +24,18 @@ jobs:
           target: ${{ matrix.target }}
           override: true
 
-      - name: Setup MinGW (Windows only)
+      - name: Install MinGW (Windows only)
         if: runner.os == 'Windows'
         run: |
           choco install mingw
           set PATH=C:\tools\mingw64\bin;%PATH%
           rustup target add x86_64-pc-windows-gnu
+
+      - name: Verify MinGW installation (Windows only)
+        if: runner.os == 'Windows'
+        run: |
+          gcc --version
+          which x86_64-w64-mingw32-gcc
 
       - name: Build project
         run: cargo build --release --target ${{ matrix.target }}
