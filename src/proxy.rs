@@ -6,7 +6,7 @@ use hyper::{
 };
 use rand::{random, Rng};
 use std::net::{IpAddr, Ipv6Addr, Ipv4Addr, SocketAddr, ToSocketAddrs};
-use tokio::{io::{AsyncRead, AsyncWrite}, net::TcpSocket, task};
+use tokio::{ net::TcpSocket, task};
 use std::sync::{Arc};
 use tokio::process::Command;
 use std::collections::{HashMap, VecDeque};
@@ -15,9 +15,9 @@ use std::time::Duration;
 use tokio::sync::Mutex;
 use lazy_static::lazy_static;
 use tokio::time::timeout;
-use std::io;
+
 use hyper::upgrade::OnUpgrade;
-use tokio::io::AsyncWriteExt;
+
 
 const MAX_ADDRESSES: usize = 1000;
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);

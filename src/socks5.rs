@@ -2,19 +2,19 @@ use tokio::net::{TcpListener, TcpSocket, TcpStream};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use std::error::Error;
 use std::net::{SocketAddr, IpAddr, Ipv4Addr, Ipv6Addr};
-use tokio::time::timeout;
+
 use rand::random;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use lazy_static::lazy_static;
-use std::time::Duration;
+
 use std::io;
 lazy_static! {
     static ref SOCKS5_ADDRESS_QUEUE: Arc<Mutex<VecDeque<String>>> = Arc::new(Mutex::new(VecDeque::new()));
 }
 
-const MAX_ADDRESSES: usize = 1000;
+
 const SOCKS_VERSION: u8 = 0x05;
 const RESERVED: u8 = 0x00;
 
@@ -213,12 +213,12 @@ impl SocksReply {
 #[derive(Debug)]
 enum ResponseCode {
     Success = 0x00,
-    Failure = 0x01,
-    RuleFailure = 0x02,
-    NetworkUnreachable = 0x03,
-    HostUnreachable = 0x04,
-    ConnectionRefused = 0x05,
-    TtlExpired = 0x06,
-    CommandNotSupported = 0x07,
-    AddrTypeNotSupported = 0x08,
+    // Failure = 0x01,
+    // RuleFailure = 0x02,
+    // NetworkUnreachable = 0x03,
+    // HostUnreachable = 0x04,
+    // ConnectionRefused = 0x05,
+    // TtlExpired = 0x06,
+    // CommandNotSupported = 0x07,
+    // AddrTypeNotSupported = 0x08,
 }
