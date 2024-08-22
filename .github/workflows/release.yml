@@ -1,4 +1,4 @@
-name: Release
+name: Build and Release
 
 on:
   push:
@@ -7,11 +7,12 @@ on:
 
 jobs:
   build:
-    runs-on: ${{ matrix.os }}
     strategy:
       matrix:
         os: [ubuntu-latest, windows-latest, macos-latest]
         target: [x86_64-unknown-linux-gnu, x86_64-pc-windows-gnu, x86_64-apple-darwin]
+
+    runs-on: ${{ matrix.os }}
 
     steps:
       - name: Checkout code
@@ -30,17 +31,6 @@ jobs:
           choco install mingw
           set PATH=C:\tools\mingw64\bin;%PATH%
           rustup target add x86_64-pc-windows-gnu
-
-      - name: Verify MinGW installation (Windows only)
-        if: runner.os == 'Windows'
-        run: |
-          gcc --version
-          which x86_64-w64-mingw32-gcc
-
-      - name: Install macOS target (macOS only)
-        if: runner.os == 'macOS'
-        run: |
-          rustup target add x86_64-apple-darwin
 
       - name: Build project
         run: cargo build --release --target ${{ matrix.target }}
