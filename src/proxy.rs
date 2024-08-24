@@ -5,7 +5,7 @@ use hyper::{
     Body, Client, Method, Request, Response, Server, StatusCode,
 };
 use rand::{random, Rng};
-use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs};
 use tokio::{ net::TcpSocket, task};
 use std::sync::{Arc};
 use tokio::process::Command;
@@ -292,15 +292,21 @@ impl Proxy {
     ) -> Result<Response<Body>, hyper::Error> {
         let timeout_duration = Duration::from_secs(10); // 30 seconds timeout
 
-        let bind_addr = if req.uri().scheme_str() == Some("https") {
-            // 随机选择一个 IPv6 子网
-            let ipv6_cidr = self.ipv6_subnets.choose(&mut rand::thread_rng()).unwrap();
+        let bind_addr = if let Some(ipv6_cidr) = self.ipv6_subnets.choose(&mut rand::thread_rng()) {
+            // 如果有可用的 IPv6 子网，生成一个随机的 IPv6 地址
             get_rand_ipv6(ipv6_cidr)
-        } else {
-            // 随机选择一个 IPv4 子网
-            let ipv4_cidr = self.ipv4_subnets.choose(&mut rand::thread_rng()).unwrap();
+        } else if let Some(ipv4_cidr) = self.ipv4_subnets.choose(&mut rand::thread_rng()) {
+            // 如果有可用的 IPv4 子网，生成一个随机的 IPv4 地址
             get_rand_ipv4(ipv4_cidr)
+        } else {
+            // 如果没有可用的 IPv6 或 IPv4 子网，则回退到默认回环地址
+            if self.ipv6_subnets.is_empty() {
+                IpAddr::V6(Ipv6Addr::LOCALHOST) // IPv6 环回地址 (::1)
+            } else {
+                IpAddr::V4(Ipv4Addr::LOCALHOST) // IPv4 环回地址 (127.0.0.1)
+            }
         };
+
 
         let mut http = HttpConnector::new();
         http.set_local_address(Some(bind_addr));
