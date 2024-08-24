@@ -1,70 +1,59 @@
 use tokio::net::{TcpListener, TcpSocket, TcpStream};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use std::error::Error;
-use std::net::{SocketAddr, IpAddr, Ipv4Addr, Ipv6Addr};
+use std::net::{SocketAddr, IpAddr};
 
 use rand::random;
+use rand::seq::SliceRandom;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use tokio::sync::Mutex;
 use lazy_static::lazy_static;
 
 use std::io;
+use cidr::{Ipv4Cidr, Ipv6Cidr};
+
 lazy_static! {
     static ref SOCKS5_ADDRESS_QUEUE: Arc<Mutex<VecDeque<String>>> = Arc::new(Mutex::new(VecDeque::new()));
 }
-
 
 const SOCKS_VERSION: u8 = 0x05;
 const RESERVED: u8 = 0x00;
 
 pub async fn start_socks5_proxy(
     listen_addr: SocketAddr,
-    (ipv6, ipv6_prefix_len): (Ipv6Addr, u8),
-    (ipv4, ipv4_prefix_len): (Ipv4Addr, u8),
+    ipv6_subnets: Arc<Vec<Ipv6Cidr>>,  // 修改为 Arc<Vec<Ipv6Cidr>>
+    ipv4_subnets: Arc<Vec<Ipv4Cidr>>,  // 修改为 Arc<Vec<Ipv4Cidr>>
     allowed_ips: Option<Vec<IpAddr>>,  // 允许的 IP 地址列表
 ) -> Result<(), Box<dyn Error>> {
     let listener = TcpListener::bind(listen_addr).await?;
     println!("SOCKS5 proxy listening on {}", listen_addr);
-
 
     loop {
         let (mut socket, addr) = listener.accept().await?;
 
         // 检查客户端 IP 地址是否在允许的 IP 列表中
         if let Some(ref allowed_ips) = allowed_ips {
-            if !allowed_ips.contains(&addr.ip()) {
+            let ip_allowed = allowed_ips.iter().any(|allowed_ip| match (allowed_ip, addr.ip()) {
+                (IpAddr::V4(allowed_ip), IpAddr::V4(client_ip)) => {
+                    Ipv4Cidr::new(*allowed_ip, 32).unwrap().contains(&client_ip)
+                }
+                (IpAddr::V6(allowed_ip), IpAddr::V6(client_ip)) => {
+                    Ipv6Cidr::new(*allowed_ip, 128).unwrap().contains(&client_ip)
+                }
+                _ => false,
+            });
+
+            if !ip_allowed {
                 eprintln!("Access denied for IP: {}", addr.ip());
                 continue;  // 如果不在列表中，直接拒绝连接
             }
         }
 
-        let bind_addr = match (ipv4, ipv6) {
-            (Ipv4Addr::UNSPECIFIED, Ipv6Addr::UNSPECIFIED) => {
-                // Both IPv4 and IPv6 are unspecified, use both.
-                match socket.local_addr()? {
-                    SocketAddr::V4(_) => get_rand_ipv4_socket_addr(ipv4, ipv4_prefix_len),
-                    SocketAddr::V6(_) => get_rand_ipv6_socket_addr(ipv6, ipv6_prefix_len),
-                }
-            }
-            (Ipv4Addr::UNSPECIFIED, _) => {
-                // Only IPv4 is unspecified, use IPv6.
-                get_rand_ipv6_socket_addr(ipv6, ipv6_prefix_len)
-            }
-            (_, Ipv6Addr::UNSPECIFIED) => {
-                // Only IPv6 is unspecified, use IPv4.
-                get_rand_ipv4_socket_addr(ipv4, ipv4_prefix_len)
-            }
-            _ => {
-                // If neither is unspecified, use the address type of the socket.
-                match socket.local_addr()? {
-                    SocketAddr::V4(_) => get_rand_ipv4_socket_addr(ipv4, ipv4_prefix_len),
-                    SocketAddr::V6(_) => get_rand_ipv6_socket_addr(ipv6, ipv6_prefix_len),
-                }
-            }
+        let bind_addr = match addr {
+            SocketAddr::V4(_) => get_rand_ipv4_socket_addr(&ipv4_subnets),
+            SocketAddr::V6(_) => get_rand_ipv6_socket_addr(&ipv6_subnets),
         };
-
-
 
         tokio::spawn(async move {
             if let Err(e) = handle_socks5_connection(&mut socket, bind_addr).await {
@@ -73,7 +62,6 @@ pub async fn start_socks5_proxy(
         });
     }
 }
-
 async fn handle_socks5_connection(
     socket: &mut TcpStream,
     bind_addr: SocketAddr,
@@ -152,38 +140,42 @@ async fn read_port(socket: &mut TcpStream) -> Result<u16, Box<dyn Error>> {
     Ok(u16::from_be_bytes(buf))
 }
 
-fn get_rand_ipv4_socket_addr(ipv4: Ipv4Addr, prefix_len: u8) -> SocketAddr {
-    let ip_addr = get_rand_ipv4(ipv4.into(), prefix_len);
+fn get_rand_ipv4_socket_addr(ipv4_subnets: &[Ipv4Cidr]) -> SocketAddr {
+    let mut rng = rand::thread_rng();
+    let ipv4_cidr = ipv4_subnets.choose(&mut rng).unwrap(); // 从列表中随机选择一个子网
+    let ip_addr = get_rand_ipv4(ipv4_cidr);
     SocketAddr::new(ip_addr, random::<u16>())
 }
 
-fn get_rand_ipv6_socket_addr(ipv6: Ipv6Addr, prefix_len: u8) -> SocketAddr {
-    let ip_addr = get_rand_ipv6(ipv6.into(), prefix_len);
+fn get_rand_ipv6_socket_addr(ipv6_subnets: &[Ipv6Cidr]) -> SocketAddr {
+    let mut rng = rand::thread_rng();
+    let ipv6_cidr = ipv6_subnets.choose(&mut rng).unwrap(); // 从列表中随机选择一个子网
+    let ip_addr = get_rand_ipv6(ipv6_cidr);
     SocketAddr::new(ip_addr, random::<u16>())
 }
-
-fn get_rand_ipv4(mut ipv4: u32, prefix_len: u8) -> IpAddr {
-    if prefix_len == 32 {
-        return IpAddr::V4(ipv4.into());
+fn get_rand_ipv4(ipv4_cidr: &Ipv4Cidr) -> IpAddr {
+    // let mut rng = rand::thread_rng();
+    let mut ipv4 = u32::from(ipv4_cidr.first_address());  // 使用 first_address() 获取网络地址
+    if ipv4_cidr.network_length() != 32 {
+        let rand: u32 = random();
+        let net_part = (ipv4 >> (32 - ipv4_cidr.network_length())) << (32 - ipv4_cidr.network_length());
+        let host_part = (rand << ipv4_cidr.network_length()) >> ipv4_cidr.network_length();
+        ipv4 = net_part | host_part;
     }
-    let rand: u32 = random();
-    let net_part = (ipv4 >> (32 - prefix_len)) << (32 - prefix_len);
-    let host_part = (rand << prefix_len) >> prefix_len;
-    ipv4 = net_part | host_part;
     IpAddr::V4(ipv4.into())
 }
 
-fn get_rand_ipv6(mut ipv6: u128, prefix_len: u8) -> IpAddr {
-    if prefix_len == 128 {
-        return IpAddr::V6(ipv6.into());
+fn get_rand_ipv6(ipv6_cidr: &Ipv6Cidr) -> IpAddr {
+    // let mut rng = rand::thread_rng();
+    let mut ipv6 = u128::from(ipv6_cidr.first_address());  // 使用 first_address() 获取网络地址
+    if ipv6_cidr.network_length() != 128 {
+        let rand: u128 = random();
+        let net_part = (ipv6 >> (128 - ipv6_cidr.network_length())) << (128 - ipv6_cidr.network_length());
+        let host_part = (rand << ipv6_cidr.network_length()) >> ipv6_cidr.network_length();
+        ipv6 = net_part | host_part;
     }
-    let rand: u128 = random();
-    let net_part = (ipv6 >> (128 - prefix_len)) << (128 - prefix_len);
-    let host_part = (rand << prefix_len) >> prefix_len;
-    ipv6 = net_part | host_part;
     IpAddr::V6(ipv6.into())
 }
-
 struct SocksReply {
     buf: [u8; 10],
 }

@@ -5,7 +5,7 @@ use hyper::{
     Body, Client, Method, Request, Response, Server, StatusCode,
 };
 use rand::{random, Rng};
-use std::net::{IpAddr, Ipv6Addr, Ipv4Addr, SocketAddr, ToSocketAddrs};
+use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
 use tokio::{ net::TcpSocket, task};
 use std::sync::{Arc};
 use tokio::process::Command;
@@ -17,7 +17,8 @@ use lazy_static::lazy_static;
 use tokio::time::timeout;
 
 use hyper::upgrade::OnUpgrade;
-
+use cidr::{Ipv4Cidr, Ipv6Cidr};
+use rand::seq::SliceRandom;
 
 const MAX_ADDRESSES: usize = 1000;
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
@@ -31,39 +32,33 @@ pub async fn start_proxy(
     is_system_route: bool,
     gateway: String,
     interface: String,
-    (ipv6, ipv6_prefix_len): (Ipv6Addr, u8),
-    (ipv4, ipv4_prefix_len): (Ipv4Addr, u8),
-    allowed_ips: Option<Vec<IpAddr>>,  // 修改为 Option<Vec<IpAddr>>
+    ipv6_subnets: Arc<Vec<Ipv6Cidr>>,
+    ipv4_subnets: Arc<Vec<Ipv4Cidr>>,
+    allowed_ips: Option<Vec<IpAddr>>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let interface_arc = Arc::new(interface);
     let gateway_arc = Arc::new(gateway);
-    let allowed_ips_arc = allowed_ips.map(Arc::new);  // 将 allowed_ips 包装为 Option<Arc<Vec<IpAddr>>>
+    let allowed_ips_arc = allowed_ips.map(Arc::new);
 
     let make_service = make_service_fn(move |conn: &AddrStream| {
         let remote_addr = conn.remote_addr();
         let interface_clone = Arc::clone(&interface_arc);
         let gateway_clone = Arc::clone(&gateway_arc);
-
-        // 直接使用 allowed_ips_arc，而不是调用 Arc::clone
+        let ipv6_subnets_clone = Arc::clone(&ipv6_subnets);  // 使用 Arc 克隆引用
+        let ipv4_subnets_clone = Arc::clone(&ipv4_subnets);
         let allowed_ips_clone = allowed_ips_arc.clone();
 
         async move {
             let service = service_fn(move |mut req: Request<Body>| {
-                // 将客户端的 SocketAddr 添加到请求的扩展中
                 req.extensions_mut().insert(remote_addr);
 
-                let interface_per_request = interface_clone.clone();
-                let gateway_per_request = gateway_clone.clone();
-
                 Proxy {
-                    ipv6: ipv6.into(),
-                    ipv6_prefix_len,
-                    ipv4: ipv4.into(),
-                    ipv4_prefix_len,
+                    ipv6_subnets: Arc::clone(&ipv6_subnets_clone),  // 直接使用 Arc::clone
+                    ipv4_subnets: Arc::clone(&ipv4_subnets_clone),  // 直接使用 Arc::clone
                     address_queue: GLOBAL_ADDRESS_QUEUE.clone(),
-                    allowed_ips: allowed_ips_clone.clone(),  // 直接传递 Option<Arc<Vec<IpAddr>>>
+                    allowed_ips: allowed_ips_clone.clone(),
                 }
-                    .proxy(req, is_system_route, (*interface_per_request).clone(), (*gateway_per_request).clone())
+                    .proxy(req, is_system_route, (*interface_clone).clone(), (*gateway_clone).clone())
             });
 
             Ok::<_, hyper::Error>(service)
@@ -80,14 +75,11 @@ pub async fn start_proxy(
 
 #[derive(Clone)]
 pub(crate) struct Proxy {
-    pub ipv6: u128,
-    pub ipv6_prefix_len: u8,
-    pub ipv4: u32,
-    pub ipv4_prefix_len: u8,
+    pub ipv6_subnets: Arc<Vec<Ipv6Cidr>>,
+    pub ipv4_subnets: Arc<Vec<Ipv4Cidr>>,
     address_queue: Arc<Mutex<VecDeque<String>>>,
-    allowed_ips: Option<Arc<Vec<IpAddr>>>,  // 修改为 Option<Arc<Vec<IpAddr>>>
+    allowed_ips: Option<Arc<Vec<IpAddr>>>,
 }
-
 impl Proxy {
     pub(crate) async fn proxy(
         self,
@@ -111,7 +103,19 @@ impl Proxy {
 
             // 如果设置了 allowed_ips 列表，则检查客户端 IP 是否在列表中
             if let Some(allowed_ips) = &self.allowed_ips {
-                if !allowed_ips.contains(&client_ip) {
+                let ip_allowed = allowed_ips.iter().any(|allowed_ip| match (allowed_ip, client_ip) {
+                    (IpAddr::V4(allowed_ip), IpAddr::V4(client_ip)) => {
+                        // 使用包含关系判断 IPv4 子网
+                        Ipv4Cidr::new(*allowed_ip, 32).unwrap().contains(&client_ip)
+                    }
+                    (IpAddr::V6(allowed_ip), IpAddr::V6(client_ip)) => {
+                        // 使用包含关系判断 IPv6 子网
+                        Ipv6Cidr::new(*allowed_ip, 128).unwrap().contains(&client_ip)
+                    }
+                    _ => false,
+                });
+
+                if !ip_allowed {
                     println!("Access denied for IP: {}", client_ip);
                     return Ok(Response::builder()
                         .status(StatusCode::FORBIDDEN)
@@ -147,7 +151,6 @@ impl Proxy {
             }
         }
     }
-
 
     async fn process_connect(
         self,
@@ -204,8 +207,8 @@ impl Proxy {
         };
 
         let bind_addr = match addr {
-            SocketAddr::V4(_) => get_rand_ipv4_socket_addr(self.ipv4, self.ipv4_prefix_len),
-            SocketAddr::V6(_) => get_rand_ipv6_socket_addr(self.ipv6, self.ipv6_prefix_len),
+            SocketAddr::V4(_) => get_rand_ipv4_socket_addr(&self.ipv4_subnets),
+            SocketAddr::V6(_) => get_rand_ipv6_socket_addr(&self.ipv6_subnets),
         };
 
         if is_system_route {
@@ -213,9 +216,9 @@ impl Proxy {
                 "ip addr add {}/{} dev {}",
                 bind_addr.ip(),
                 if bind_addr.is_ipv6() {
-                    self.ipv6_prefix_len
+                    128
                 } else {
-                    self.ipv4_prefix_len
+                    32
                 },
                 interface
             );
@@ -280,10 +283,6 @@ impl Proxy {
     }
 
 
-
-
-
-
     async fn process_request(
         self,
         req: Request<Body>,
@@ -294,9 +293,13 @@ impl Proxy {
         let timeout_duration = Duration::from_secs(10); // 30 seconds timeout
 
         let bind_addr = if req.uri().scheme_str() == Some("https") {
-            get_rand_ipv6(self.ipv6, self.ipv6_prefix_len)
+            // 随机选择一个 IPv6 子网
+            let ipv6_cidr = self.ipv6_subnets.choose(&mut rand::thread_rng()).unwrap();
+            get_rand_ipv6(ipv6_cidr)
         } else {
-            get_rand_ipv4(self.ipv4, self.ipv4_prefix_len)
+            // 随机选择一个 IPv4 子网
+            let ipv4_cidr = self.ipv4_subnets.choose(&mut rand::thread_rng()).unwrap();
+            get_rand_ipv4(ipv4_cidr)
         };
 
         let mut http = HttpConnector::new();
@@ -307,7 +310,7 @@ impl Proxy {
             let cmd_str = format!(
                 "ip addr add {}/{} dev {}",
                 bind_addr,
-                if bind_addr.is_ipv6() { self.ipv6_prefix_len } else { self.ipv4_prefix_len },
+                if bind_addr.is_ipv6() { 128 } else { 32 },
                 interface
             );
             self.execute_command(cmd_str).await;
@@ -360,7 +363,7 @@ impl Proxy {
 
                     for _ in 0..addresses_to_remove {
                         if let Some(addr) = queue.pop_front() {
-                            let cmd_str = format!("ip addr del {}/{} dev {}", addr, if addr.contains(":") { self.ipv6_prefix_len } else { self.ipv4_prefix_len }, interface);
+                            let cmd_str = format!("ip addr del {}/{} dev {}", addr, if addr.contains(":") { 128 } else { 32 }, interface);
                             if let Err(e) = self.execute_command_del(cmd_str.clone()).await {
                                 eprintln!("Failed to execute command {}: {:?}", cmd_str, e);
                             }
@@ -400,38 +403,40 @@ impl Proxy {
                 .ok();
         });
     }
-
-
-
 }
-
-fn get_rand_ipv4_socket_addr(ipv4: u32, prefix_len: u8) -> SocketAddr {
+fn get_rand_ipv4_socket_addr(ipv4_subnets: &[Ipv4Cidr]) -> SocketAddr {
     let mut rng = rand::thread_rng();
-    SocketAddr::new(get_rand_ipv4(ipv4, prefix_len), rng.gen::<u16>())
-}
-fn get_rand_ipv6_socket_addr(ipv6: u128, prefix_len: u8) -> SocketAddr {
-    let mut rng = rand::thread_rng();
-    SocketAddr::new(get_rand_ipv6(ipv6, prefix_len), rng.gen::<u16>())
+    let ipv4_cidr = ipv4_subnets.choose(&mut rng).unwrap(); // 从列表中随机选择一个子网
+    SocketAddr::new(get_rand_ipv4(ipv4_cidr), rng.gen::<u16>())
 }
 
-fn get_rand_ipv6(mut ipv6: u128, prefix_len: u8) -> IpAddr {
-    if prefix_len == 128 {
-        return IpAddr::V6(ipv6.into());
+fn get_rand_ipv6_socket_addr(ipv6_subnets: &[Ipv6Cidr]) -> SocketAddr {
+    let mut rng = rand::thread_rng();
+    let ipv6_cidr = ipv6_subnets.choose(&mut rng).unwrap(); // 从列表中随机选择一个子网
+    SocketAddr::new(get_rand_ipv6(ipv6_cidr), rng.gen::<u16>())
+}
+
+fn get_rand_ipv4(ipv4_cidr: &Ipv4Cidr) -> IpAddr {
+    // let mut rng = rand::thread_rng();
+    let mut ipv4 = u32::from(ipv4_cidr.first_address());  // 使用 first_address() 获取网络地址
+    if ipv4_cidr.network_length() != 32 {
+        let rand: u32 = random();
+        let net_part = (ipv4 >> (32 - ipv4_cidr.network_length())) << (32 - ipv4_cidr.network_length());
+        let host_part = (rand << ipv4_cidr.network_length()) >> ipv4_cidr.network_length();
+        ipv4 = net_part | host_part;
     }
-    let rand: u128 = random();
-    let net_part = (ipv6 >> (128 - prefix_len)) << (128 - prefix_len);
-    let host_part = (rand << prefix_len) >> prefix_len;
-    ipv6 = net_part | host_part;
+    IpAddr::V4(ipv4.into())
+}
+
+fn get_rand_ipv6(ipv6_cidr: &Ipv6Cidr) -> IpAddr {
+    // let mut rng = rand::thread_rng();
+    let mut ipv6 = u128::from(ipv6_cidr.first_address());  // 使用 first_address() 获取网络地址
+    if ipv6_cidr.network_length() != 128 {
+        let rand: u128 = random();
+        let net_part = (ipv6 >> (128 - ipv6_cidr.network_length())) << (128 - ipv6_cidr.network_length());
+        let host_part = (rand << ipv6_cidr.network_length()) >> ipv6_cidr.network_length();
+        ipv6 = net_part | host_part;
+    }
     IpAddr::V6(ipv6.into())
 }
 
-fn get_rand_ipv4(mut ipv4: u32, prefix_len: u8) -> IpAddr {
-    if prefix_len == 32 {
-        return IpAddr::V4(ipv4.into());
-    }
-    let rand: u32 = random();
-    let net_part = (ipv4 >> (32 - prefix_len)) << (32 - prefix_len);
-    let host_part = (rand << prefix_len) >> prefix_len;
-    ipv4 = net_part | host_part;
-    IpAddr::V4(ipv4.into())
-}

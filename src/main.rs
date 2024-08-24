@@ -6,6 +6,7 @@ use getopts::Options;
 use proxy::start_proxy;
 use socks5::start_socks5_proxy;
 use std::{env, process::exit, net::IpAddr, net::SocketAddr};
+use std::sync::Arc;
 
 fn print_usage(program: &str, opts: Options) {
     let brief = format!("Usage: {} [options]", program);
@@ -21,15 +22,15 @@ async fn main() {
     opts.optopt("b", "bind", "HTTP proxy bind address", "BIND");
     opts.optopt(
         "i",
-        "ipv6-subnet",
-        "IPv6 Subnet: 2001:19f0:6001:48e4::/64",
-        "IPv6_SUBNET",
+        "ipv6-subnets",
+        "Comma-separated list of IPv6 subnets (e.g., 2001:19f0:6001:48e4::/64,2001:19f0:6001:48e5::/64)",
+        "IPv6_SUBNETS",
     );
     opts.optopt(
         "v",
-        "ipv4-subnet",
-        "IPv4 Subnet: 192.168.0.0/24",
-        "IPv4_SUBNET",
+        "ipv4-subnets",
+        "Comma-separated list of IPv4 subnets (e.g., 192.168.0.0/24,192.168.1.0/24)",
+        "IPv4_SUBNETS",
     );
     opts.optopt(
         "a",
@@ -70,31 +71,18 @@ async fn main() {
     let bind_addr = matches.opt_str("b").unwrap_or_else(|| "0.0.0.0:51080".to_string());
     let socks5_bind_addr = matches.opt_str("S").unwrap_or_else(|| "127.0.0.1:51081".to_string());
 
-    let ipv6_subnet = matches
+    let ipv6_subnets = matches
         .opt_str("i")
-        .unwrap_or_else(|| "::/128".to_string());
-    let ipv4_subnet = matches
+        .map(|s| parse_subnets::<Ipv6Cidr>(&s))
+        .unwrap_or_else(Vec::new);
+
+    let ipv4_subnets = matches
         .opt_str("v")
-        .unwrap_or_else(|| "0.0.0.0/32".to_string());
+        .map(|s| parse_subnets::<Ipv4Cidr>(&s))
+        .unwrap_or_else(Vec::new);
 
     let allowed_ips = matches.opt_str("a")
         .map(|s| parse_allowed_ips(&s));
-
-    let ipv6 = match ipv6_subnet.parse::<Ipv6Cidr>() {
-        Ok(cidr) => (cidr.first_address(), cidr.network_length()),
-        Err(_) => {
-            println!("Invalid IPv6 subnet");
-            exit(1);
-        }
-    };
-
-    let ipv4 = match ipv4_subnet.parse::<Ipv4Cidr>() {
-        Ok(cidr) => (cidr.first_address(), cidr.network_length()),
-        Err(_) => {
-            println!("Invalid IPv4 subnet");
-            exit(1);
-        }
-    };
 
     let bind_addr = match bind_addr.parse() {
         Ok(b) => b,
@@ -111,7 +99,10 @@ async fn main() {
             return;
         }
     };
-
+    // 将 Vec<Ipv6Cidr> 和 Vec<Ipv4Cidr> 转换为 Arc<Vec<Ipv6Cidr>> 和 Arc<Vec<Ipv4Cidr>>
+    let ipv6_subnets = Arc::new(ipv6_subnets);
+    let ipv4_subnets = Arc::new(ipv4_subnets);
+    // 启动HTTP代理和SOCKS5代理，并处理结果
     // 启动HTTP代理和SOCKS5代理，并处理结果
     let (http_result, socks5_result) = tokio::join!(
         start_proxy(
@@ -119,12 +110,13 @@ async fn main() {
             !system_route.is_empty(),
             gateway.clone(),
             system_route.clone(),
-            ipv6,
-            ipv4,
+            ipv6_subnets.clone(),  // 这里使用 Arc 的克隆
+            ipv4_subnets.clone(),  // 这里使用 Arc 的克隆
             allowed_ips.clone()
         ),
-        start_socks5_proxy(socks5_bind_addr, ipv6, ipv4,allowed_ips.clone())
+        start_socks5_proxy(socks5_bind_addr, ipv6_subnets, ipv4_subnets, allowed_ips)
     );
+
 
     if let Err(e) = http_result {
         eprintln!("HTTP Proxy encountered an error: {}", e);
@@ -133,6 +125,13 @@ async fn main() {
     if let Err(e) = socks5_result {
         eprintln!("SOCKS5 Proxy encountered an error: {}", e);
     }
+}
+
+fn parse_subnets<C: std::str::FromStr>(subnets_str: &str) -> Vec<C> {
+    subnets_str
+        .split(',')
+        .filter_map(|subnet_str| subnet_str.parse::<C>().ok())
+        .collect()
 }
 
 fn parse_allowed_ips(allowed_ips_str: &str) -> Vec<IpAddr> {
