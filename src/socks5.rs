@@ -50,13 +50,19 @@ pub async fn start_socks5_proxy(
             }
         }
 
-        let bind_addr = match addr {
-            SocketAddr::V4(_) => get_rand_ipv4_socket_addr(&ipv4_subnets),
-            SocketAddr::V6(_) => get_rand_ipv6_socket_addr(&ipv6_subnets),
-        };
+        // let bind_addr = match addr {
+        //
+        //     SocketAddr::V4(_) => get_rand_ipv4_socket_addr(&ipv4_subnets),
+        //     SocketAddr::V6(_) => get_rand_ipv6_socket_addr(&ipv6_subnets),
+        // };
+
+
+
+        let ipv6_subnets = Arc::clone(&ipv6_subnets);
+        let ipv4_subnets = Arc::clone(&ipv4_subnets);
 
         tokio::spawn(async move {
-            if let Err(e) = handle_socks5_connection(&mut socket, bind_addr).await {
+            if let Err(e) = handle_socks5_connection(&mut socket, &ipv6_subnets, &ipv4_subnets).await {
                 eprintln!("Failed to handle SOCKS5 connection: {}", e);
             }
         });
@@ -64,7 +70,8 @@ pub async fn start_socks5_proxy(
 }
 async fn handle_socks5_connection(
     socket: &mut TcpStream,
-    bind_addr: SocketAddr,
+    ipv6_subnets: &[Ipv6Cidr],
+    ipv4_subnets: &[Ipv4Cidr],
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut buf = [0; 2];
     socket.read_exact(&mut buf).await?;
@@ -87,13 +94,15 @@ async fn handle_socks5_connection(
     let mut buf = [0; 4];
     socket.read_exact(&mut buf).await?;
 
-    let addr = match buf[3] {
+    let (addr, bind_addr) = match buf[3] {
         0x01 => {
             // IPv4 address
             let mut ipv4 = [0; 4];
             socket.read_exact(&mut ipv4).await?;
             let port = read_port(socket).await?;
-            SocketAddr::new(IpAddr::V4(ipv4.into()), port)
+            let addr = SocketAddr::new(IpAddr::V4(ipv4.into()), port);
+            let bind_addr = get_rand_ipv4_socket_addr(ipv4_subnets);
+            (addr, bind_addr)
         }
         0x03 => {
             // Domain name
@@ -104,17 +113,30 @@ async fn handle_socks5_connection(
             let port = read_port(socket).await?;
             let domain = String::from_utf8(domain)?;
             let addr_str = format!("{}:{}", domain, port);
-            tokio::net::lookup_host(addr_str).await?.next().ok_or("Invalid domain name")?
+
+            // 解析域名，获取第一个解析到的 IP 地址
+            let addr = tokio::net::lookup_host(addr_str).await?.next().ok_or("Invalid domain name")?;
+
+            // 根据解析出来的地址类型来决定绑定的地址
+            let bind_addr = match addr {
+                SocketAddr::V4(_) => get_rand_ipv4_socket_addr(ipv4_subnets),
+                SocketAddr::V6(_) => get_rand_ipv6_socket_addr(ipv6_subnets),
+            };
+            (addr, bind_addr)
         }
         0x04 => {
             // IPv6 address
             let mut ipv6 = [0; 16];
             socket.read_exact(&mut ipv6).await?;
             let port = read_port(socket).await?;
-            SocketAddr::new(IpAddr::V6(ipv6.into()), port)
+            let addr = SocketAddr::new(IpAddr::V6(ipv6.into()), port);
+            let bind_addr = get_rand_ipv6_socket_addr(ipv6_subnets);
+            (addr, bind_addr)
         }
         _ => return Err("Unsupported address type".into()),
     };
+
+
 
     // Create a TcpSocket and bind it to bind_addr
     let socket_type = match addr {
@@ -133,6 +155,7 @@ async fn handle_socks5_connection(
     tokio::io::copy_bidirectional(socket, &mut remote).await?;
     Ok(())
 }
+
 
 async fn read_port(socket: &mut TcpStream) -> Result<u16, Box<dyn Error>> {
     let mut buf = [0; 2];
