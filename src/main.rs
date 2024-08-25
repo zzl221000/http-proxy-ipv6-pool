@@ -39,11 +39,13 @@ async fn main() {
         "ALLOWED_IPS",
     );
     opts.optopt(
-        "S",  // 使用单字符作为短选项
+        "S",
         "socks5",
         "SOCKS5 proxy bind address (e.g., 127.0.0.1:51081)",
         "SOCKS5_ADDR",
     );
+    opts.optopt("u", "username", "Username for SOCKS5 authentication", "USERNAME");
+    opts.optopt("p", "password", "Password for SOCKS5 authentication", "PASSWORD");
     opts.optflag("h", "help", "Print this help menu");
     opts.optopt("r", "system_route", "Whether to use system routing instead of ndpdd. (Provide network card interface, such as eth0)", "Network Interface");
     opts.optopt("g", "gateway", "Some service providers need to track the route before it takes effect.", "Gateway");
@@ -84,6 +86,9 @@ async fn main() {
     let allowed_ips = matches.opt_str("a")
         .map(|s| parse_allowed_ips(&s));
 
+    let username = matches.opt_str("u").unwrap_or_else(|| "".to_string());
+    let password = matches.opt_str("p").unwrap_or_else(|| "".to_string());
+
     let bind_addr = match bind_addr.parse() {
         Ok(b) => b,
         Err(e) => {
@@ -99,10 +104,10 @@ async fn main() {
             return;
         }
     };
-    // 将 Vec<Ipv6Cidr> 和 Vec<Ipv4Cidr> 转换为 Arc<Vec<Ipv6Cidr>> 和 Arc<Vec<Ipv4Cidr>>
+
     let ipv6_subnets = Arc::new(ipv6_subnets);
     let ipv4_subnets = Arc::new(ipv4_subnets);
-    // 启动HTTP代理和SOCKS5代理，并处理结果
+
     // 启动HTTP代理和SOCKS5代理，并处理结果
     let (http_result, socks5_result) = tokio::join!(
         start_proxy(
@@ -110,13 +115,14 @@ async fn main() {
             !system_route.is_empty(),
             gateway.clone(),
             system_route.clone(),
-            ipv6_subnets.clone(),  // 这里使用 Arc 的克隆
-            ipv4_subnets.clone(),  // 这里使用 Arc 的克隆
-            allowed_ips.clone()
+            ipv6_subnets.clone(),
+            ipv4_subnets.clone(),
+            allowed_ips.clone(),
+            username.clone(),
+            password.clone()
         ),
-        start_socks5_proxy(socks5_bind_addr, ipv6_subnets, ipv4_subnets, allowed_ips)
+        start_socks5_proxy(socks5_bind_addr, ipv6_subnets, ipv4_subnets, allowed_ips, username, password)
     );
-
 
     if let Err(e) = http_result {
         eprintln!("HTTP Proxy encountered an error: {}", e);

@@ -19,6 +19,7 @@ rand = "0.8"
 lazy_static = "1.4.0"
 tokio-socks = "0.5.2"
 socks = "0.3"
+base64 = "0.22.1"
 
 
 

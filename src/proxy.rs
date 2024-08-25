@@ -15,6 +15,8 @@ use std::time::Duration;
 use tokio::sync::Mutex;
 use lazy_static::lazy_static;
 use tokio::time::timeout;
+use base64::engine::general_purpose::STANDARD;
+use base64::Engine;
 
 use hyper::upgrade::OnUpgrade;
 use cidr::{Ipv4Cidr, Ipv6Cidr};
@@ -35,10 +37,14 @@ pub async fn start_proxy(
     ipv6_subnets: Arc<Vec<Ipv6Cidr>>,
     ipv4_subnets: Arc<Vec<Ipv4Cidr>>,
     allowed_ips: Option<Vec<IpAddr>>,
+    username: String,  // 新增用户名参数
+    password: String,  // 新增密码参数
 ) -> Result<(), Box<dyn std::error::Error>> {
     let interface_arc = Arc::new(interface);
     let gateway_arc = Arc::new(gateway);
     let allowed_ips_arc = allowed_ips.map(Arc::new);
+    let username_arc = Arc::new(username);  // 用 Arc 包装用户名
+    let password_arc = Arc::new(password);  // 用 Arc 包装密码
 
     let make_service = make_service_fn(move |conn: &AddrStream| {
         let remote_addr = conn.remote_addr();
@@ -47,6 +53,8 @@ pub async fn start_proxy(
         let ipv6_subnets_clone = Arc::clone(&ipv6_subnets);  // 使用 Arc 克隆引用
         let ipv4_subnets_clone = Arc::clone(&ipv4_subnets);
         let allowed_ips_clone = allowed_ips_arc.clone();
+        let username_clone = Arc::clone(&username_arc);  // 克隆用户名
+        let password_clone = Arc::clone(&password_arc);  // 克隆密码
 
         async move {
             let service = service_fn(move |mut req: Request<Body>| {
@@ -57,6 +65,8 @@ pub async fn start_proxy(
                     ipv4_subnets: Arc::clone(&ipv4_subnets_clone),  // 直接使用 Arc::clone
                     address_queue: GLOBAL_ADDRESS_QUEUE.clone(),
                     allowed_ips: allowed_ips_clone.clone(),
+                    username: username_clone.clone(),  // 传递用户名
+                    password: password_clone.clone(),  // 传递密码
                 }
                     .proxy(req, is_system_route, (*interface_clone).clone(), (*gateway_clone).clone())
             });
@@ -79,7 +89,10 @@ pub(crate) struct Proxy {
     pub ipv4_subnets: Arc<Vec<Ipv4Cidr>>,
     address_queue: Arc<Mutex<VecDeque<String>>>,
     allowed_ips: Option<Arc<Vec<IpAddr>>>,
+    username: Arc<String>,  // 添加用户名字段
+    password: Arc<String>,  // 添加密码字段
 }
+
 impl Proxy {
     pub(crate) async fn proxy(
         self,
@@ -88,6 +101,17 @@ impl Proxy {
         interface: String,
         gateway: String,
     ) -> Result<Response<Body>, hyper::Error> {
+        let auth_enabled = !self.username.is_empty() && !self.password.is_empty();
+        if auth_enabled {
+            if !self.is_authorized(&req) {
+                return Ok(Response::builder()
+                    .status(StatusCode::UNAUTHORIZED)
+                    .header("WWW-Authenticate", r#"Basic realm="User Visible Realm""#)
+                    .body(Body::from("Unauthorized"))
+                    .unwrap());
+            }
+        }
+
         let client_ip: Option<IpAddr> = if let Some(remote_addr) = req.extensions().get::<SocketAddr>() {
             Some(remote_addr.ip())
         } else if let Some(forwarded_for) = req.headers().get("x-forwarded-for") {
@@ -128,7 +152,7 @@ impl Proxy {
         }
 
         // Define a timeout duration
-        let timeout_duration = Duration::from_secs(10); // 30 seconds timeout
+        let timeout_duration = Duration::from_secs(10); // 10 seconds timeout
 
         match timeout(timeout_duration, async {
             if req.method() == Method::CONNECT {
@@ -150,6 +174,25 @@ impl Proxy {
                     .unwrap())
             }
         }
+    }
+
+    fn is_authorized(&self, req: &Request<Body>) -> bool {
+        if let Some(auth_header) = req.headers().get("Proxy-Authorization") {
+            if let Ok(auth_str) = auth_header.to_str() {
+                if auth_str.starts_with("Basic ") {
+                    let encoded_credentials = &auth_str[6..];
+                    if let Ok(decoded_credentials) = STANDARD.decode(encoded_credentials) {
+                        let decoded_str = String::from_utf8(decoded_credentials).unwrap_or_default();
+                        let credentials: Vec<&str> = decoded_str.splitn(2, ':').collect();
+                        if credentials.len() == 2 {
+                            let (username, password) = (credentials[0], credentials[1]);
+                            return username == self.username.as_str() && password == self.password.as_str();
+                        }
+                    }
+                }
+            }
+        }
+        false
     }
 
     async fn process_connect(
@@ -410,6 +453,7 @@ impl Proxy {
         });
     }
 }
+
 fn get_rand_ipv4_socket_addr(ipv4_subnets: &[Ipv4Cidr]) -> SocketAddr {
     let mut rng = rand::thread_rng();
     let ipv4_cidr = ipv4_subnets.choose(&mut rng).unwrap(); // 从列表中随机选择一个子网
@@ -423,7 +467,6 @@ fn get_rand_ipv6_socket_addr(ipv6_subnets: &[Ipv6Cidr]) -> SocketAddr {
 }
 
 fn get_rand_ipv4(ipv4_cidr: &Ipv4Cidr) -> IpAddr {
-    // let mut rng = rand::thread_rng();
     let mut ipv4 = u32::from(ipv4_cidr.first_address());  // 使用 first_address() 获取网络地址
     if ipv4_cidr.network_length() != 32 {
         let rand: u32 = random();
@@ -435,7 +478,6 @@ fn get_rand_ipv4(ipv4_cidr: &Ipv4Cidr) -> IpAddr {
 }
 
 fn get_rand_ipv6(ipv6_cidr: &Ipv6Cidr) -> IpAddr {
-    // let mut rng = rand::thread_rng();
     let mut ipv6 = u128::from(ipv6_cidr.first_address());  // 使用 first_address() 获取网络地址
     if ipv6_cidr.network_length() != 128 {
         let rand: u128 = random();
@@ -445,4 +487,3 @@ fn get_rand_ipv6(ipv6_cidr: &Ipv6Cidr) -> IpAddr {
     }
     IpAddr::V6(ipv6.into())
 }
-
