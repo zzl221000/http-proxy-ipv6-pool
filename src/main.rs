@@ -7,6 +7,7 @@ use proxy::start_proxy;
 use socks5::start_socks5_proxy;
 use std::{env, process::exit, net::IpAddr, net::SocketAddr};
 use std::sync::Arc;
+use std::time::Duration;
 
 fn print_usage(program: &str, opts: Options) {
     let brief = format!("Usage: {} [options]", program);
@@ -46,6 +47,7 @@ async fn main() {
     );
     opts.optopt("u", "username", "Username for SOCKS5 authentication", "USERNAME");
     opts.optopt("p", "password", "Password for SOCKS5 authentication", "PASSWORD");
+    opts.optopt("t", "timeout", "Timeout duration in seconds", "TIMEOUT");  // 新增-t参数
     opts.optflag("h", "help", "Print this help menu");
     opts.optopt("r", "system_route", "Whether to use system routing instead of ndpdd. (Provide network card interface, such as eth0)", "Network Interface");
     opts.optopt("g", "gateway", "Some service providers need to track the route before it takes effect.", "Gateway");
@@ -89,6 +91,12 @@ async fn main() {
     let username = matches.opt_str("u").unwrap_or_else(|| "".to_string());
     let password = matches.opt_str("p").unwrap_or_else(|| "".to_string());
 
+    // Parse the timeout duration from the command line arguments
+    let timeout_duration = matches.opt_str("t")
+        .and_then(|t| t.parse::<u64>().ok())
+        .map(Duration::from_secs)
+        .unwrap_or(Duration::from_secs(5));  // Default to 5 seconds if not specified
+
     let bind_addr = match bind_addr.parse() {
         Ok(b) => b,
         Err(e) => {
@@ -119,9 +127,10 @@ async fn main() {
             ipv4_subnets.clone(),
             allowed_ips.clone(),
             username.clone(),
-            password.clone()
+            password.clone(),
+            timeout_duration  // 传递timeout_duration
         ),
-        start_socks5_proxy(socks5_bind_addr, ipv6_subnets, ipv4_subnets, allowed_ips, username, password)
+        start_socks5_proxy(socks5_bind_addr, ipv6_subnets, ipv4_subnets, allowed_ips, username, password, timeout_duration)
     );
 
     if let Err(e) = http_result {

@@ -9,6 +9,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use lazy_static::lazy_static;
 use std::io;
+use tokio::time::{timeout, Duration};
 use cidr::{Ipv4Cidr, Ipv6Cidr};
 
 lazy_static! {
@@ -31,6 +32,7 @@ pub async fn start_socks5_proxy(
     allowed_ips: Option<Vec<IpAddr>>,
     username: String,
     password: String,
+    timeout_duration: Duration, // 新增 timeout 参数
 ) -> Result<(), Box<dyn Error>> {
     let listener = TcpListener::bind(listen_addr).await?;
     println!("SOCKS5 proxy listening on {}", listen_addr);
@@ -64,7 +66,15 @@ pub async fn start_socks5_proxy(
         let password = password.clone();
 
         tokio::spawn(async move {
-            if let Err(e) = handle_socks5_connection(&mut socket, &ipv6_subnets, &ipv4_subnets, &username, &password, auth_enabled).await {
+            if let Err(e) = handle_socks5_connection(
+                &mut socket,
+                &ipv6_subnets,
+                &ipv4_subnets,
+                &username,
+                &password,
+                auth_enabled,
+                timeout_duration // 传递 timeout 参数
+            ).await {
                 eprintln!("Failed to handle SOCKS5 connection: {}", e);
             }
         });
@@ -78,9 +88,10 @@ async fn handle_socks5_connection(
     expected_username: &str,
     expected_password: &str,
     auth_enabled: bool,
+    timeout_duration: Duration, // 新增 timeout 参数
 ) -> Result<(), Box<dyn std::error::Error>> {
     let mut buf = [0; 2];
-    socket.read_exact(&mut buf).await?;
+    timeout(timeout_duration, socket.read_exact(&mut buf)).await??;
 
     if buf[0] != SOCKS_VERSION {
         return Err("Unsupported SOCKS version".into());
@@ -88,7 +99,7 @@ async fn handle_socks5_connection(
 
     let nmethods = buf[1] as usize;
     let mut methods = vec![0; nmethods];
-    socket.read_exact(&mut methods).await?;
+    timeout(timeout_duration, socket.read_exact(&mut methods)).await??;
 
     let selected_method = if auth_enabled {
         if methods.contains(&METHOD_USERNAME_PASSWORD) {
@@ -102,36 +113,36 @@ async fn handle_socks5_connection(
         0xFF  // No acceptable method if only no auth is supported but no auth method is provided
     };
 
-    socket.write_all(&[SOCKS_VERSION, selected_method]).await?;
+    timeout(timeout_duration, socket.write_all(&[SOCKS_VERSION, selected_method])).await??;
 
     if selected_method == METHOD_USERNAME_PASSWORD {
-        if !authenticate(socket, expected_username, expected_password).await? {
-            socket.write_all(&[AUTH_VERSION, AUTH_FAILURE]).await?;
+        if !timeout(timeout_duration, authenticate(socket, expected_username, expected_password)).await?? {
+            timeout(timeout_duration, socket.write_all(&[AUTH_VERSION, AUTH_FAILURE])).await??;
             return Err("Authentication failed".into());
         }
-        socket.write_all(&[AUTH_VERSION, AUTH_SUCCESS]).await?;
+        timeout(timeout_duration, socket.write_all(&[AUTH_VERSION, AUTH_SUCCESS])).await??;
     } else if selected_method == 0xFF {
         return Err("No acceptable authentication method".into());
     }
 
     let mut buf = [0; 4];
-    socket.read_exact(&mut buf).await?;
+    timeout(timeout_duration, socket.read_exact(&mut buf)).await??;
 
     let (addr, bind_addr) = match buf[3] {
         0x01 => {
             let mut ipv4 = [0; 4];
-            socket.read_exact(&mut ipv4).await?;
-            let port = read_port(socket).await?;
+            timeout(timeout_duration, socket.read_exact(&mut ipv4)).await??;
+            let port = timeout(timeout_duration, read_port(socket)).await??;
             let addr = SocketAddr::new(IpAddr::V4(ipv4.into()), port);
             let bind_addr = get_rand_ipv4_socket_addr(ipv4_subnets);
             (addr, bind_addr)
         }
         0x03 => {
             let mut domain_len = [0; 1];
-            socket.read_exact(&mut domain_len).await?;
+            timeout(timeout_duration, socket.read_exact(&mut domain_len)).await??;
             let mut domain = vec![0; domain_len[0] as usize];
-            socket.read_exact(&mut domain).await?;
-            let port = read_port(socket).await?;
+            timeout(timeout_duration, socket.read_exact(&mut domain)).await??;
+            let port = timeout(timeout_duration, read_port(socket)).await??;
             let domain = String::from_utf8(domain)?;
             let addr_str = format!("{}:{}", domain, port);
 
@@ -145,8 +156,8 @@ async fn handle_socks5_connection(
         }
         0x04 => {
             let mut ipv6 = [0; 16];
-            socket.read_exact(&mut ipv6).await?;
-            let port = read_port(socket).await?;
+            timeout(timeout_duration, socket.read_exact(&mut ipv6)).await??;
+            let port = timeout(timeout_duration, read_port(socket)).await??;
             let addr = SocketAddr::new(IpAddr::V6(ipv6.into()), port);
             let bind_addr = get_rand_ipv6_socket_addr(ipv6_subnets);
             (addr, bind_addr)
@@ -161,12 +172,12 @@ async fn handle_socks5_connection(
 
     socket_type.bind(bind_addr)?;
 
-    let mut remote = socket_type.connect(addr).await?;
+    let mut remote = timeout(timeout_duration, socket_type.connect(addr)).await??;
 
     let reply = SocksReply::new(ResponseCode::Success);
-    reply.send(socket).await?;
+    timeout(timeout_duration, reply.send(socket)).await??;
 
-    tokio::io::copy_bidirectional(socket, &mut remote).await?;
+    timeout(timeout_duration, tokio::io::copy_bidirectional(socket, &mut remote)).await??;
     Ok(())
 }
 

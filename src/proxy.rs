@@ -23,7 +23,7 @@ use cidr::{Ipv4Cidr, Ipv6Cidr};
 use rand::seq::SliceRandom;
 
 const MAX_ADDRESSES: usize = 1000;
-const DEFAULT_TIMEOUT: Duration = Duration::from_secs(10);
+
 lazy_static! {
     static ref IP_MAP: Mutex<HashMap<String, IpAddr>> = Mutex::new(HashMap::new());
     static ref GLOBAL_ADDRESS_QUEUE: Arc<Mutex<VecDeque<String>>> = Arc::new(Mutex::new(VecDeque::new()));
@@ -39,6 +39,7 @@ pub async fn start_proxy(
     allowed_ips: Option<Vec<IpAddr>>,
     username: String,  // 新增用户名参数
     password: String,  // 新增密码参数
+    timeout_duration: Duration, // 新增timeout_duration参数
 ) -> Result<(), Box<dyn std::error::Error>> {
     let interface_arc = Arc::new(interface);
     let gateway_arc = Arc::new(gateway);
@@ -68,7 +69,7 @@ pub async fn start_proxy(
                     username: username_clone.clone(),  // 传递用户名
                     password: password_clone.clone(),  // 传递密码
                 }
-                    .proxy(req, is_system_route, (*interface_clone).clone(), (*gateway_clone).clone())
+                    .proxy(req, is_system_route, (*interface_clone).clone(), (*gateway_clone).clone(), timeout_duration)
             });
 
             Ok::<_, hyper::Error>(service)
@@ -100,6 +101,7 @@ impl Proxy {
         is_system_route: bool,
         interface: String,
         gateway: String,
+        timeout_duration: Duration,
     ) -> Result<Response<Body>, hyper::Error> {
         let auth_enabled = !self.username.is_empty() && !self.password.is_empty();
         if auth_enabled {
@@ -151,14 +153,14 @@ impl Proxy {
             println!("Failed to get client IP address");
         }
 
-        // Define a timeout duration
-        let timeout_duration = Duration::from_secs(10); // 10 seconds timeout
+
+
 
         match timeout(timeout_duration, async {
             if req.method() == Method::CONNECT {
-                self.process_connect(req, is_system_route, interface.clone(), gateway.clone()).await
+                self.process_connect(req, is_system_route, interface.clone(), gateway.clone(), timeout_duration).await
             } else {
-                self.process_request(req, is_system_route, interface.clone(), gateway.clone()).await
+                self.process_request(req, is_system_route, interface.clone(), gateway.clone(), timeout_duration).await
             }
         })
             .await
@@ -201,6 +203,7 @@ impl Proxy {
         is_system_route: bool,
         interface: String,
         gateway: String,
+        timeout_duration: Duration,
     ) -> Result<Response<Body>, hyper::Error> {
         let remote_addr = match req.uri().authority().map(|auth| auth.to_string()) {
             Some(addr) => addr,
@@ -222,7 +225,7 @@ impl Proxy {
             }
         };
 
-        let timeout_duration = DEFAULT_TIMEOUT;
+
 
         let addrs = match remote_addr.to_socket_addrs() {
             Ok(addrs) => addrs.collect::<Vec<_>>(),
@@ -277,7 +280,7 @@ impl Proxy {
                 queue.push_back(bind_addr.ip().to_string());
             }
 
-            self.manage_address_count(&interface).await;
+            self.manage_address_count(&interface,timeout_duration).await;
         }
 
         if socket.bind(bind_addr).is_err() {
@@ -332,28 +335,64 @@ impl Proxy {
         is_system_route: bool,
         interface: String,
         gateway: String,
+        timeout_duration: Duration,
     ) -> Result<Response<Body>, hyper::Error> {
-        let timeout_duration = Duration::from_secs(10); // 30 seconds timeout
 
-        let bind_addr = if let Some(ipv6_cidr) = self.ipv6_subnets.choose(&mut rand::thread_rng()) {
-            // 如果有可用的 IPv6 子网，生成一个随机的 IPv6 地址
-            get_rand_ipv6(ipv6_cidr)
-        } else if let Some(ipv4_cidr) = self.ipv4_subnets.choose(&mut rand::thread_rng()) {
-            // 如果有可用的 IPv4 子网，生成一个随机的 IPv4 地址
-            get_rand_ipv4(ipv4_cidr)
+
+        let bind_addr = if let Some(host) = req.uri().host() {
+            let addr_str = format!("{}:{}", host, req.uri().port_u16().unwrap_or(80));
+
+            match tokio::net::lookup_host(addr_str).await {
+                Ok(mut addrs) => {
+                    if let Some(addr) = addrs.next() {
+                        match addr {
+                            SocketAddr::V4(_) => {
+                                // Host resolves to an IPv4 address, select from IPv4 subnets
+                                if let Some(ipv4_cidr) = self.ipv4_subnets.choose(&mut rand::thread_rng()) {
+                                    get_rand_ipv4_socket_addr(std::slice::from_ref(ipv4_cidr)).ip()
+                                } else {
+                                    IpAddr::V4(Ipv4Addr::LOCALHOST) // Fallback to IPv4 loopback address (127.0.0.1)
+                                }
+                            }
+                            SocketAddr::V6(_) => {
+                                // Host resolves to an IPv6 address, select from IPv6 subnets
+                                if let Some(ipv6_cidr) = self.ipv6_subnets.choose(&mut rand::thread_rng()) {
+                                    get_rand_ipv6_socket_addr(std::slice::from_ref(ipv6_cidr)).ip()
+                                } else {
+                                    IpAddr::V6(Ipv6Addr::LOCALHOST) // Fallback to IPv6 loopback address (::1)
+                                }
+                            }
+                        }
+                    } else {
+                        // No valid address found, fallback to loopback
+                        if self.ipv6_subnets.is_empty() {
+                            IpAddr::V4(Ipv4Addr::LOCALHOST) // Default to IPv4 loopback
+                        } else {
+                            IpAddr::V6(Ipv6Addr::LOCALHOST) // Default to IPv6 loopback
+                        }
+                    }
+                }
+                Err(_) => {
+                    // Error during lookup, fallback to loopback
+                    if self.ipv6_subnets.is_empty() {
+                        IpAddr::V4(Ipv4Addr::LOCALHOST) // Default to IPv4 loopback
+                    } else {
+                        IpAddr::V6(Ipv6Addr::LOCALHOST) // Default to IPv6 loopback
+                    }
+                }
+            }
         } else {
-            // 如果没有可用的 IPv6 或 IPv4 子网，则回退到默认回环地址
+            // Fallback if there is no host in the URI
             if self.ipv6_subnets.is_empty() {
-                IpAddr::V6(Ipv6Addr::LOCALHOST) // IPv6 环回地址 (::1)
+                IpAddr::V4(Ipv4Addr::LOCALHOST) // Default to IPv4 loopback
             } else {
-                IpAddr::V4(Ipv4Addr::LOCALHOST) // IPv4 环回地址 (127.0.0.1)
+                IpAddr::V6(Ipv6Addr::LOCALHOST) // Default to IPv6 loopback
             }
         };
 
-
         let mut http = HttpConnector::new();
         http.set_local_address(Some(bind_addr));
-        println!("{} via {bind_addr}", req.uri().host().unwrap_or_default());
+        println!("{} via {}", req.uri().host().unwrap_or_default(), bind_addr);
 
         if is_system_route {
             let cmd_str = format!(
@@ -374,7 +413,7 @@ impl Proxy {
                 queue.push_back(bind_addr.to_string());
             }
 
-            self.manage_address_count(&interface).await;
+            self.manage_address_count(&interface, timeout_duration).await;
         }
 
         // Apply timeout to the HTTP request process
@@ -401,10 +440,10 @@ impl Proxy {
         }
     }
 
-    async fn manage_address_count(&self, interface: &str) {
-        let lock_timeout = Duration::from_secs(5);
+    async fn manage_address_count(&self, interface: &str, timeout_duration: Duration) {
 
-        match timeout(lock_timeout, self.address_queue.lock()).await {
+
+        match timeout(timeout_duration, self.address_queue.lock()).await {
             Ok(mut queue) => {
                 eprintln!("Acquired lock {}", queue.len());
                 if queue.len() > MAX_ADDRESSES {
