@@ -6,7 +6,7 @@ use hyper::{
 };
 use rand::{random, Rng};
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr, ToSocketAddrs};
-use tokio::{ net::TcpSocket, task};
+use tokio::{net::TcpSocket, task};
 use std::sync::{Arc};
 use tokio::process::Command;
 use std::collections::{HashMap, VecDeque};
@@ -20,11 +20,16 @@ use base64::Engine;
 
 use hyper::upgrade::OnUpgrade;
 use cidr::{Ipv4Cidr, Ipv6Cidr};
+use moka::sync::Cache;
 use rand::seq::SliceRandom;
 
 const MAX_ADDRESSES: usize = 1000;
 
 lazy_static! {
+    static ref PROXY_MAP: Cache<String,IpAddr> = Cache::builder()
+    .max_capacity(10*1000)
+    .time_to_idle(Duration::from_secs(300))
+    .build();
     static ref IP_MAP: Mutex<HashMap<String, IpAddr>> = Mutex::new(HashMap::new());
     static ref GLOBAL_ADDRESS_QUEUE: Arc<Mutex<VecDeque<String>>> = Arc::new(Mutex::new(VecDeque::new()));
 }
@@ -154,8 +159,6 @@ impl Proxy {
         }
 
 
-
-
         match timeout(timeout_duration, async {
             if req.method() == Method::CONNECT {
                 self.process_connect(req, is_system_route, interface.clone(), gateway.clone(), timeout_duration).await
@@ -177,7 +180,16 @@ impl Proxy {
             }
         }
     }
-
+    fn extract_authorized(&self, req: &Request<Body>) -> Option<String> {
+        if let Some(auth_header) = req.headers().get("Proxy-Authorization") {
+            if let Ok(auth_str) = auth_header.to_str() {
+                if auth_str.starts_with("Basic ") {
+                    return Some((&auth_str[6..]).to_string());
+                }
+            }
+        }
+        None
+    }
     fn is_authorized(&self, req: &Request<Body>) -> bool {
         if let Some(auth_header) = req.headers().get("Proxy-Authorization") {
             if let Ok(auth_str) = auth_header.to_str() {
@@ -224,7 +236,6 @@ impl Proxy {
                     .unwrap());
             }
         };
-
 
 
         let addrs = match remote_addr.to_socket_addrs() {
@@ -280,7 +291,7 @@ impl Proxy {
                 queue.push_back(bind_addr.ip().to_string());
             }
 
-            self.manage_address_count(&interface,timeout_duration).await;
+            self.manage_address_count(&interface, timeout_duration).await;
         }
 
         if socket.bind(bind_addr).is_err() {
@@ -313,11 +324,9 @@ impl Proxy {
             match timeout(timeout_duration, tokio::io::copy_bidirectional(&mut client_upgrade.await.unwrap(), &mut server)).await {
                 Ok(Ok((client_bytes, server_bytes))) => {
                     println!("Client wrote {} bytes, server wrote {} bytes", client_bytes, server_bytes);
-
                 }
                 Ok(Err(err)) => {
                     println!("Tunnel error: {:?}", err);
-
                 }
                 Err(_) => {
                     println!("Tunnel timed out");
@@ -325,7 +334,6 @@ impl Proxy {
             }
         });
         Ok(Response::new(Body::empty()))
-
     }
 
 
@@ -337,29 +345,52 @@ impl Proxy {
         gateway: String,
         timeout_duration: Duration,
     ) -> Result<Response<Body>, hyper::Error> {
-
-
         let bind_addr = if let Some(host) = req.uri().host() {
             let addr_str = format!("{}:{}", host, req.uri().port_u16().unwrap_or(80));
 
             match tokio::net::lookup_host(addr_str).await {
                 Ok(mut addrs) => {
                     if let Some(addr) = addrs.next() {
-                        match addr {
-                            SocketAddr::V4(_) => {
-                                // Host resolves to an IPv4 address, select from IPv4 subnets
-                                if let Some(ipv4_cidr) = self.ipv4_subnets.choose(&mut rand::thread_rng()) {
-                                    get_rand_ipv4_socket_addr(std::slice::from_ref(ipv4_cidr)).ip()
-                                } else {
-                                    IpAddr::V4(Ipv4Addr::LOCALHOST) // Fallback to IPv4 loopback address (127.0.0.1)
+                        if let Some(idx) = self.extract_authorized(&req) {
+                            match addr {
+                                SocketAddr::V4(_) => {
+                                    // Host resolves to an IPv4 address, select from IPv4 subnets
+                                    if let Some(ipv4_cidr) = self.ipv4_subnets.choose(&mut rand::thread_rng()) {
+                                        PROXY_MAP.get_with(idx.to_string(), || {
+                                            get_rand_ipv4_socket_addr(std::slice::from_ref(ipv4_cidr)).ip()
+                                        })
+                                    } else {
+                                        IpAddr::V4(Ipv4Addr::LOCALHOST) // Fallback to IPv4 loopback address (127.0.0.1)
+                                    }
+                                }
+                                SocketAddr::V6(_) => {
+                                    // Host resolves to an IPv6 address, select from IPv6 subnets
+                                    if let Some(ipv6_cidr) = self.ipv6_subnets.choose(&mut rand::thread_rng()) {
+                                        PROXY_MAP.get_with(idx,  ||{
+                                            get_rand_ipv6_socket_addr(std::slice::from_ref(ipv6_cidr)).ip()
+                                        })
+                                    } else {
+                                        IpAddr::V6(Ipv6Addr::LOCALHOST) // Fallback to IPv6 loopback address (::1)
+                                    }
                                 }
                             }
-                            SocketAddr::V6(_) => {
-                                // Host resolves to an IPv6 address, select from IPv6 subnets
-                                if let Some(ipv6_cidr) = self.ipv6_subnets.choose(&mut rand::thread_rng()) {
-                                    get_rand_ipv6_socket_addr(std::slice::from_ref(ipv6_cidr)).ip()
-                                } else {
-                                    IpAddr::V6(Ipv6Addr::LOCALHOST) // Fallback to IPv6 loopback address (::1)
+                        } else {
+                            match addr {
+                                SocketAddr::V4(_) => {
+                                    // Host resolves to an IPv4 address, select from IPv4 subnets
+                                    if let Some(ipv4_cidr) = self.ipv4_subnets.choose(&mut rand::thread_rng()) {
+                                        get_rand_ipv4_socket_addr(std::slice::from_ref(ipv4_cidr)).ip()
+                                    } else {
+                                        IpAddr::V4(Ipv4Addr::LOCALHOST) // Fallback to IPv4 loopback address (127.0.0.1)
+                                    }
+                                }
+                                SocketAddr::V6(_) => {
+                                    // Host resolves to an IPv6 address, select from IPv6 subnets
+                                    if let Some(ipv6_cidr) = self.ipv6_subnets.choose(&mut rand::thread_rng()) {
+                                        get_rand_ipv6_socket_addr(std::slice::from_ref(ipv6_cidr)).ip()
+                                    } else {
+                                        IpAddr::V6(Ipv6Addr::LOCALHOST) // Fallback to IPv6 loopback address (::1)
+                                    }
                                 }
                             }
                         }
@@ -441,8 +472,6 @@ impl Proxy {
     }
 
     async fn manage_address_count(&self, interface: &str, timeout_duration: Duration) {
-
-
         match timeout(timeout_duration, self.address_queue.lock()).await {
             Ok(mut queue) => {
                 eprintln!("Acquired lock {}", queue.len());
