@@ -26,7 +26,7 @@ use rand::seq::SliceRandom;
 const MAX_ADDRESSES: usize = 1000;
 
 lazy_static! {
-    static ref PROXY_MAP: Cache<String,SocketAddr> = Cache::builder()
+    static ref PROXY_MAP: Cache<String,IpAddr> = Cache::builder()
     .max_capacity(10*1000)
     .time_to_idle(Duration::from_secs(300))
     .build();
@@ -264,16 +264,17 @@ impl Proxy {
         };
         let bind_addr = if let Some(idx) = self.extract_authorized(&req) {
             match addr {
-                SocketAddr::V4(_) => {PROXY_MAP.get_with(idx,||get_rand_ipv4_socket_addr(&self.ipv4_subnets))}
-                SocketAddr::V6(_) => {PROXY_MAP.get_with(idx,||get_rand_ipv6_socket_addr(&self.ipv6_subnets))}
+                SocketAddr::V4(_) => { PROXY_MAP.get_with(idx, || get_rand_ipv4_socket_addr(&self.ipv4_subnets).ip()) }
+                SocketAddr::V6(_) => { PROXY_MAP.get_with(idx, || get_rand_ipv6_socket_addr(&self.ipv6_subnets).ip()) }
             }
         } else {
             match addr {
-                SocketAddr::V4(_) => get_rand_ipv4_socket_addr(&self.ipv4_subnets),
-                SocketAddr::V6(_) => get_rand_ipv6_socket_addr(&self.ipv6_subnets),
+                SocketAddr::V4(_) => get_rand_ipv4_socket_addr(&self.ipv4_subnets).ip(),
+                SocketAddr::V6(_) => get_rand_ipv6_socket_addr(&self.ipv6_subnets).ip(),
             }
         }
-       ;
+            ;
+        let bind_addr = SocketAddr::new(bind_addr, 0);
 
         if is_system_route {
             let cmd_str = format!(
@@ -365,8 +366,8 @@ impl Proxy {
                                     // Host resolves to an IPv4 address, select from IPv4 subnets
                                     if let Some(ipv4_cidr) = self.ipv4_subnets.choose(&mut rand::thread_rng()) {
                                         PROXY_MAP.get_with(idx.to_string(), || {
-                                            get_rand_ipv4_socket_addr(std::slice::from_ref(ipv4_cidr))
-                                        }).ip()
+                                            get_rand_ipv4_socket_addr(std::slice::from_ref(ipv4_cidr)).ip()
+                                        })
                                     } else {
                                         IpAddr::V4(Ipv4Addr::LOCALHOST) // Fallback to IPv4 loopback address (127.0.0.1)
                                     }
@@ -374,9 +375,9 @@ impl Proxy {
                                 SocketAddr::V6(_) => {
                                     // Host resolves to an IPv6 address, select from IPv6 subnets
                                     if let Some(ipv6_cidr) = self.ipv6_subnets.choose(&mut rand::thread_rng()) {
-                                        PROXY_MAP.get_with(idx,  ||{
-                                            get_rand_ipv6_socket_addr(std::slice::from_ref(ipv6_cidr))
-                                        }).ip()
+                                        PROXY_MAP.get_with(idx, || {
+                                            get_rand_ipv6_socket_addr(std::slice::from_ref(ipv6_cidr)).ip()
+                                        })
                                     } else {
                                         IpAddr::V6(Ipv6Addr::LOCALHOST) // Fallback to IPv6 loopback address (::1)
                                     }
