@@ -27,8 +27,8 @@ const MAX_ADDRESSES: usize = 1000;
 
 lazy_static! {
     static ref PROXY_MAP: Cache<String,IpAddr> = Cache::builder()
-    .max_capacity(10*1000)
-    .time_to_idle(Duration::from_secs(300))
+    .max_capacity(1000*1000)
+    .time_to_idle(Duration::from_secs(600))
     .build();
     static ref IP_MAP: Mutex<HashMap<String, IpAddr>> = Mutex::new(HashMap::new());
     static ref GLOBAL_ADDRESS_QUEUE: Arc<Mutex<VecDeque<String>>> = Arc::new(Mutex::new(VecDeque::new()));
