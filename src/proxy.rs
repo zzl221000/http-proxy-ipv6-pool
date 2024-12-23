@@ -134,7 +134,7 @@ impl Proxy {
             };
 
         if let Some(client_ip) = client_ip {
-            println!("Client IP: {}", client_ip);
+            // println!("Client IP: {}", client_ip);
 
             // 如果设置了 allowed_ips 列表，则检查客户端 IP 是否在列表中
             if let Some(allowed_ips) = &self.allowed_ips {
@@ -357,10 +357,10 @@ impl Proxy {
             .await
             {
                 Ok(Ok((client_bytes, server_bytes))) => {
-                    println!(
-                        "Client wrote {} bytes, server wrote {} bytes",
-                        client_bytes, server_bytes
-                    );
+                    // println!(
+                    //     "Client wrote {} bytes, server wrote {} bytes",
+                    //     client_bytes, server_bytes
+                    // );
                 }
                 Ok(Err(err)) => {
                     println!("Tunnel error: {:?}", err);
