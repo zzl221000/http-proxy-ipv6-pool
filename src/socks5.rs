@@ -1,19 +1,20 @@
-use tokio::net::{TcpListener, TcpSocket, TcpStream};
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use std::error::Error;
-use std::net::{SocketAddr, IpAddr};
+use cidr::{Ipv4Cidr, Ipv6Cidr};
+use lazy_static::lazy_static;
 use rand::random;
 use rand::seq::SliceRandom;
 use std::collections::VecDeque;
-use std::sync::Arc;
-use tokio::sync::Mutex;
-use lazy_static::lazy_static;
+use std::error::Error;
 use std::io;
-use tokio::time::{timeout, Duration};
-use cidr::{Ipv4Cidr, Ipv6Cidr};
+use std::net::{IpAddr, SocketAddr};
+use std::sync::Arc;
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
+use tokio::net::{TcpListener, TcpSocket, TcpStream};
+use tokio::sync::Mutex;
+use tokio::time::{Duration, timeout};
 
 lazy_static! {
-    static ref SOCKS5_ADDRESS_QUEUE: Arc<Mutex<VecDeque<String>>> = Arc::new(Mutex::new(VecDeque::new()));
+    static ref SOCKS5_ADDRESS_QUEUE: Arc<Mutex<VecDeque<String>>> =
+        Arc::new(Mutex::new(VecDeque::new()));
 }
 
 const SOCKS_VERSION: u8 = 0x05;
@@ -43,15 +44,19 @@ pub async fn start_socks5_proxy(
         let (mut socket, addr) = listener.accept().await?;
 
         if let Some(ref allowed_ips) = allowed_ips {
-            let ip_allowed = allowed_ips.iter().any(|allowed_ip| match (allowed_ip, addr.ip()) {
-                (IpAddr::V4(allowed_ip), IpAddr::V4(client_ip)) => {
-                    Ipv4Cidr::new(*allowed_ip, 32).unwrap().contains(&client_ip)
-                }
-                (IpAddr::V6(allowed_ip), IpAddr::V6(client_ip)) => {
-                    Ipv6Cidr::new(*allowed_ip, 128).unwrap().contains(&client_ip)
-                }
-                _ => false,
-            });
+            let ip_allowed = allowed_ips
+                .iter()
+                .any(|allowed_ip| match (allowed_ip, addr.ip()) {
+                    (IpAddr::V4(allowed_ip), IpAddr::V4(client_ip)) => {
+                        Ipv4Cidr::new(*allowed_ip, 32).unwrap().contains(&client_ip)
+                    }
+                    (IpAddr::V6(allowed_ip), IpAddr::V6(client_ip)) => {
+                        Ipv6Cidr::new(*allowed_ip, 128)
+                            .unwrap()
+                            .contains(&client_ip)
+                    }
+                    _ => false,
+                });
 
             if !ip_allowed {
                 eprintln!("Access denied for IP: {}", addr.ip());
@@ -73,8 +78,10 @@ pub async fn start_socks5_proxy(
                 &username,
                 &password,
                 auth_enabled,
-                timeout_duration // 传递 timeout 参数
-            ).await {
+                timeout_duration, // 传递 timeout 参数
+            )
+            .await
+            {
                 eprintln!("Failed to handle SOCKS5 connection: {}", e);
             }
         });
@@ -105,22 +112,39 @@ async fn handle_socks5_connection(
         if methods.contains(&METHOD_USERNAME_PASSWORD) {
             METHOD_USERNAME_PASSWORD
         } else {
-            0xFF  // No acceptable method if auth is enabled but username/password is not supported
+            0xFF // No acceptable method if auth is enabled but username/password is not supported
         }
     } else if methods.contains(&METHOD_NO_AUTH) {
         METHOD_NO_AUTH
     } else {
-        0xFF  // No acceptable method if only no auth is supported but no auth method is provided
+        0xFF // No acceptable method if only no auth is supported but no auth method is provided
     };
 
-    timeout(timeout_duration, socket.write_all(&[SOCKS_VERSION, selected_method])).await??;
+    timeout(
+        timeout_duration,
+        socket.write_all(&[SOCKS_VERSION, selected_method]),
+    )
+    .await??;
 
     if selected_method == METHOD_USERNAME_PASSWORD {
-        if !timeout(timeout_duration, authenticate(socket, expected_username, expected_password)).await?? {
-            timeout(timeout_duration, socket.write_all(&[AUTH_VERSION, AUTH_FAILURE])).await??;
+        if !timeout(
+            timeout_duration,
+            authenticate(socket, expected_username, expected_password),
+        )
+        .await??
+        {
+            timeout(
+                timeout_duration,
+                socket.write_all(&[AUTH_VERSION, AUTH_FAILURE]),
+            )
+            .await??;
             return Err("Authentication failed".into());
         }
-        timeout(timeout_duration, socket.write_all(&[AUTH_VERSION, AUTH_SUCCESS])).await??;
+        timeout(
+            timeout_duration,
+            socket.write_all(&[AUTH_VERSION, AUTH_SUCCESS]),
+        )
+        .await??;
     } else if selected_method == 0xFF {
         return Err("No acceptable authentication method".into());
     }
@@ -146,7 +170,10 @@ async fn handle_socks5_connection(
             let domain = String::from_utf8(domain)?;
             let addr_str = format!("{}:{}", domain, port);
 
-            let addr = tokio::net::lookup_host(addr_str).await?.next().ok_or("Invalid domain name")?;
+            let addr = tokio::net::lookup_host(addr_str)
+                .await?
+                .next()
+                .ok_or("Invalid domain name")?;
 
             let bind_addr = match addr {
                 SocketAddr::V4(_) => get_rand_ipv4_socket_addr(ipv4_subnets),
@@ -177,11 +204,19 @@ async fn handle_socks5_connection(
     let reply = SocksReply::new(ResponseCode::Success);
     timeout(timeout_duration, reply.send(socket)).await??;
 
-    timeout(timeout_duration, tokio::io::copy_bidirectional(socket, &mut remote)).await??;
+    timeout(
+        timeout_duration,
+        tokio::io::copy_bidirectional(socket, &mut remote),
+    )
+    .await??;
     Ok(())
 }
 
-async fn authenticate(socket: &mut TcpStream, expected_username: &str, expected_password: &str) -> Result<bool, Box<dyn Error>> {
+async fn authenticate(
+    socket: &mut TcpStream,
+    expected_username: &str,
+    expected_password: &str,
+) -> Result<bool, Box<dyn Error>> {
     let mut version = [0; 1];
     socket.read_exact(&mut version).await?;
     if version[0] != AUTH_VERSION {
@@ -198,7 +233,7 @@ async fn authenticate(socket: &mut TcpStream, expected_username: &str, expected_
     let mut passwd = vec![0; plen[0] as usize];
     socket.read_exact(&mut passwd).await?;
 
-    if &uname == expected_username.as_bytes() && &passwd == expected_password.as_bytes() {
+    if uname == expected_username.as_bytes() && passwd == expected_password.as_bytes() {
         Ok(true)
     } else {
         Ok(false)
@@ -229,7 +264,8 @@ fn get_rand_ipv4(ipv4_cidr: &Ipv4Cidr) -> IpAddr {
     let mut ipv4 = u32::from(ipv4_cidr.first_address());
     if ipv4_cidr.network_length() != 32 {
         let rand: u32 = random();
-        let net_part = (ipv4 >> (32 - ipv4_cidr.network_length())) << (32 - ipv4_cidr.network_length());
+        let net_part =
+            (ipv4 >> (32 - ipv4_cidr.network_length())) << (32 - ipv4_cidr.network_length());
         let host_part = (rand << ipv4_cidr.network_length()) >> ipv4_cidr.network_length();
         ipv4 = net_part | host_part;
     }
@@ -240,7 +276,8 @@ fn get_rand_ipv6(ipv6_cidr: &Ipv6Cidr) -> IpAddr {
     let mut ipv6 = u128::from(ipv6_cidr.first_address());
     if ipv6_cidr.network_length() != 128 {
         let rand: u128 = random();
-        let net_part = (ipv6 >> (128 - ipv6_cidr.network_length())) << (128 - ipv6_cidr.network_length());
+        let net_part =
+            (ipv6 >> (128 - ipv6_cidr.network_length())) << (128 - ipv6_cidr.network_length());
         let host_part = (rand << ipv6_cidr.network_length()) >> ipv6_cidr.network_length();
         ipv6 = net_part | host_part;
     }
@@ -258,8 +295,12 @@ impl SocksReply {
             status as u8,
             RESERVED,
             0x01,
-            0, 0, 0, 0,
-            0, 0,
+            0,
+            0,
+            0,
+            0,
+            0,
+            0,
         ];
         Self { buf }
     }

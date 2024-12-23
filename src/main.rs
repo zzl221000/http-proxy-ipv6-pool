@@ -5,9 +5,9 @@ use cidr::{Ipv4Cidr, Ipv6Cidr};
 use getopts::Options;
 use proxy::start_proxy;
 use socks5::start_socks5_proxy;
-use std::{env, process::exit, net::IpAddr, net::SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
+use std::{env, net::IpAddr, net::SocketAddr, process::exit};
 
 fn print_usage(program: &str, opts: Options) {
     let brief = format!("Usage: {} [options]", program);
@@ -45,12 +45,27 @@ async fn main() {
         "SOCKS5 proxy bind address (e.g., 127.0.0.1:51081)",
         "SOCKS5_ADDR",
     );
-    opts.optopt("u", "username", "Username for SOCKS5 authentication", "USERNAME");
-    opts.optopt("p", "password", "Password for SOCKS5 authentication", "PASSWORD");
-    opts.optopt("t", "timeout", "Timeout duration in seconds", "TIMEOUT");  // 新增-t参数
+    opts.optopt(
+        "u",
+        "username",
+        "Username for SOCKS5 authentication",
+        "USERNAME",
+    );
+    opts.optopt(
+        "p",
+        "password",
+        "Password for SOCKS5 authentication",
+        "PASSWORD",
+    );
+    opts.optopt("t", "timeout", "Timeout duration in seconds", "TIMEOUT"); // 新增-t参数
     opts.optflag("h", "help", "Print this help menu");
     opts.optopt("r", "system_route", "Whether to use system routing instead of ndpdd. (Provide network card interface, such as eth0)", "Network Interface");
-    opts.optopt("g", "gateway", "Some service providers need to track the route before it takes effect.", "Gateway");
+    opts.optopt(
+        "g",
+        "gateway",
+        "Some service providers need to track the route before it takes effect.",
+        "Gateway",
+    );
 
     let matches = match opts.parse(&args[1..]) {
         Ok(m) => m,
@@ -72,8 +87,12 @@ async fn main() {
     let gateway = matches.opt_str("g").unwrap_or_else(|| "".to_string());
     println!("Gateway: {}", gateway);
 
-    let bind_addr = matches.opt_str("b").unwrap_or_else(|| "0.0.0.0:51080".to_string());
-    let socks5_bind_addr = matches.opt_str("S").unwrap_or_else(|| "127.0.0.1:51081".to_string());
+    let bind_addr = matches
+        .opt_str("b")
+        .unwrap_or_else(|| "0.0.0.0:51080".to_string());
+    let socks5_bind_addr = matches
+        .opt_str("S")
+        .unwrap_or_else(|| "127.0.0.1:51081".to_string());
 
     let ipv6_subnets = matches
         .opt_str("i")
@@ -85,17 +104,17 @@ async fn main() {
         .map(|s| parse_subnets::<Ipv4Cidr>(&s))
         .unwrap_or_else(Vec::new);
 
-    let allowed_ips = matches.opt_str("a")
-        .map(|s| parse_allowed_ips(&s));
+    let allowed_ips = matches.opt_str("a").map(|s| parse_allowed_ips(&s));
 
     let username = matches.opt_str("u").unwrap_or_else(|| "".to_string());
     let password = matches.opt_str("p").unwrap_or_else(|| "".to_string());
 
     // Parse the timeout duration from the command line arguments
-    let timeout_duration = matches.opt_str("t")
+    let timeout_duration = matches
+        .opt_str("t")
         .and_then(|t| t.parse::<u64>().ok())
         .map(Duration::from_secs)
-        .unwrap_or(Duration::from_secs(5));  // Default to 5 seconds if not specified
+        .unwrap_or(Duration::from_secs(5)); // Default to 5 seconds if not specified
 
     let bind_addr = match bind_addr.parse() {
         Ok(b) => b,
@@ -128,9 +147,17 @@ async fn main() {
             allowed_ips.clone(),
             username.clone(),
             password.clone(),
-            timeout_duration  // 传递timeout_duration
+            timeout_duration // 传递timeout_duration
         ),
-        start_socks5_proxy(socks5_bind_addr, ipv6_subnets, ipv4_subnets, allowed_ips, username, password, timeout_duration)
+        start_socks5_proxy(
+            socks5_bind_addr,
+            ipv6_subnets,
+            ipv4_subnets,
+            allowed_ips,
+            username,
+            password,
+            timeout_duration
+        )
     );
 
     if let Err(e) = http_result {
