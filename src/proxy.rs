@@ -289,7 +289,7 @@ impl Proxy {
                     SocketAddr::V6(_) => get_assign_ipv6_socket_addr(last_addr, &self.ipv6_subnets),
                 },
                 Err(_) => {
-                    println!("Invalid value for last addr: {}", value);
+                    println!("Invalid value for last addr: {:?}", value);
                     match addr {
                         SocketAddr::V4(_) => get_rand_ipv4_socket_addr(&self.ipv4_subnets),
                         SocketAddr::V6(_) => get_rand_ipv6_socket_addr(&self.ipv6_subnets),
