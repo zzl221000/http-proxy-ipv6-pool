@@ -275,7 +275,7 @@ impl Proxy {
             SocketAddr::V4(_) => TcpSocket::new_v4().unwrap(),
             SocketAddr::V6(_) => TcpSocket::new_v6().unwrap(),
         };
-        let bind_addr = match req.headers().get("X-LAST-ADDR") {
+        let bind_addr = match req.headers().get("Proxy-LAST-ADDR") {
             None => match addr {
                 SocketAddr::V4(_) => get_rand_ipv4_socket_addr(&self.ipv4_subnets),
                 SocketAddr::V6(_) => get_rand_ipv6_socket_addr(&self.ipv6_subnets),
@@ -369,7 +369,7 @@ impl Proxy {
 
     async fn process_request(
         self,
-        req: Request<Body>,
+        mut req: Request<Body>,
         is_system_route: bool,
         interface: String,
         gateway: String,
@@ -377,7 +377,7 @@ impl Proxy {
     ) -> Result<Response<Body>, hyper::Error> {
         let bind_addr = if let Some(host) = req.uri().host() {
             let addr_str = format!("{}:{}", host, req.uri().port_u16().unwrap_or(80));
-            let last_addr = req.headers().get("X-LAST-ADDR");
+            let last_addr = req.headers().get("Proxy-LAST-ADDR");
             match tokio::net::lookup_host(addr_str).await {
                 Ok(mut addrs) => {
                     if let Some(addr) = addrs.next() {
@@ -495,7 +495,18 @@ impl Proxy {
                 .http1_title_case_headers(true)
                 .http1_preserve_header_case(true)
                 .build(http);
+            let mut headers_to_remove=Vec::new();
+            // 遍历所有的头信息，找到以 "Proxy-" 开头的头
+            for (name, _) in req.headers().iter() {
+                if name.as_str().to_lowercase().starts_with("proxy-") {
+                    headers_to_remove.push(name.clone());
+                }
+            }
 
+            // 移除找到的头
+            for name in headers_to_remove {
+                req.headers_mut().remove(name);
+            }
             client.request(req).await
         })
         .await
