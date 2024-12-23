@@ -275,19 +275,25 @@ impl Proxy {
             SocketAddr::V4(_) => TcpSocket::new_v4().unwrap(),
             SocketAddr::V6(_) => TcpSocket::new_v6().unwrap(),
         };
-        let bind_addr = match req.headers().get("Proxy-LAST-ADDR") {
-            None => match addr {
-                SocketAddr::V4(_) => get_rand_ipv4_socket_addr(&self.ipv4_subnets),
-                SocketAddr::V6(_) => get_rand_ipv6_socket_addr(&self.ipv6_subnets),
+        let bind_addr = match req.headers().get("proxy-last-addr") {
+            None => {
+                println!("No valid IP addresses resolved");
+                match addr {
+                    SocketAddr::V4(_) => get_rand_ipv4_socket_addr(&self.ipv4_subnets),
+                    SocketAddr::V6(_) => get_rand_ipv6_socket_addr(&self.ipv6_subnets),
+                }
             },
             Some(value) => match value.to_str() {
                 Ok(last_addr) => match addr {
                     SocketAddr::V4(_) => get_assign_ipv4_socket_addr(last_addr, &self.ipv4_subnets),
                     SocketAddr::V6(_) => get_assign_ipv6_socket_addr(last_addr, &self.ipv6_subnets),
                 },
-                Err(_) => match addr {
-                    SocketAddr::V4(_) => get_rand_ipv4_socket_addr(&self.ipv4_subnets),
-                    SocketAddr::V6(_) => get_rand_ipv6_socket_addr(&self.ipv6_subnets),
+                Err(_) => {
+                    println!("Invalid value for last addr: {}", value);
+                    match addr {
+                        SocketAddr::V4(_) => get_rand_ipv4_socket_addr(&self.ipv4_subnets),
+                        SocketAddr::V6(_) => get_rand_ipv6_socket_addr(&self.ipv6_subnets),
+                    }
                 },
             },
         };
@@ -377,7 +383,7 @@ impl Proxy {
     ) -> Result<Response<Body>, hyper::Error> {
         let bind_addr = if let Some(host) = req.uri().host() {
             let addr_str = format!("{}:{}", host, req.uri().port_u16().unwrap_or(80));
-            let last_addr = req.headers().get("Proxy-LAST-ADDR");
+            let last_addr = req.headers().get("proxy-last-addr");
             match tokio::net::lookup_host(addr_str).await {
                 Ok(mut addrs) => {
                     if let Some(addr) = addrs.next() {
