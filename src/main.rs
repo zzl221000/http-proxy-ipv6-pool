@@ -4,16 +4,139 @@ mod socks5;
 use cidr::{Ipv4Cidr, Ipv6Cidr};
 use getopts::Options;
 use proxy::start_proxy;
+use serde::{Deserialize, Serialize};
 use socks5::start_socks5_proxy;
+use std::fs;
+use std::io::{self, BufRead};
+use std::path::Path;
 use std::sync::Arc;
 use std::time::Duration;
 use std::{env, net::IpAddr, net::SocketAddr, process::exit};
-
 fn print_usage(program: &str, opts: Options) {
     let brief = format!("Usage: {} [options]", program);
     print!("{}", opts.usage(&brief));
 }
+#[derive(Debug, Serialize, Deserialize)]
+struct Config {
+    route_ttl: u64,
+    address_ttl: u64,
+    proxies: Vec<Proxy>,
+}
 
+#[derive(Debug, Serialize, Deserialize)]
+struct Proxy {
+    interface: String,
+    router: bool,
+    timeout: u64,
+    ttl: u64,
+    rules: Vec<Rule>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+struct Rule {
+    prefix: String,
+    static_route: bool,
+}
+
+fn parse_ndppd_conf<P: AsRef<Path>>(path: P) -> io::Result<Config> {
+    let file = fs::File::open(path)?;
+    let reader = io::BufReader::new(file);
+
+    let mut config = Config {
+        route_ttl: 0,
+        address_ttl: 0,
+        proxies: Vec::new(),
+    };
+    let mut current_proxy: Option<Proxy> = None;
+    let mut current_rule: Option<Rule> = None;
+
+    for line in reader.lines() {
+        let line = line?;
+        let trimmed_line = line.trim();
+
+        if trimmed_line.is_empty() || trimmed_line.starts_with('#') {
+            continue; // Skip empty lines and comments
+        }
+
+        if let Some(proxy_start) = trimmed_line.strip_prefix("proxy ") {
+            if let Some(_end_brace) = proxy_start.find('}') {
+                // Handle end of a proxy block
+                if let Some(mut proxy) = current_proxy.take() {
+                    if let Some(rule) = current_rule.take() {
+                        proxy.rules.push(rule);
+                    }
+                    config.proxies.push(proxy);
+                }
+                continue;
+            }
+
+            if let Some(open_brace) = proxy_start.find('{') {
+                let interface = &proxy_start[..open_brace].trim().to_string();
+                current_proxy = Some(Proxy {
+                    interface: interface.clone(),
+                    router: false,
+                    timeout: 0,
+                    ttl: 0,
+                    rules: Vec::new(),
+                });
+                continue;
+            }
+        }
+
+        if let Some(key_value) = trimmed_line.split_once(' ') {
+            let (key, value) = key_value;
+            match key.trim() {
+                "route-ttl" => config.route_ttl = value.trim().parse().unwrap_or(0),
+                "address-ttl" => config.address_ttl = value.trim().parse().unwrap_or(0),
+                "router" => {
+                    if let Some(ref mut proxy) = current_proxy {
+                        proxy.router = value.trim() == "yes";
+                    }
+                }
+                "timeout" => {
+                    if let Some(ref mut proxy) = current_proxy {
+                        proxy.timeout = value.trim().parse().unwrap_or(0);
+                    }
+                }
+                "ttl" => {
+                    if let Some(ref mut proxy) = current_proxy {
+                        proxy.ttl = value.trim().parse().unwrap_or(0);
+                    }
+                }
+                "rule" => {
+                    if let Some(open_brace) = value.find('{') {
+                        let prefix = value[..open_brace].trim().to_string();
+                        current_rule = Some(Rule {
+                            prefix: prefix.clone(),
+                            static_route: false,
+                        });
+                    }
+                }
+                "static" => {
+                    if let Some(ref mut rule) = current_rule {
+                        rule.static_route = true;
+                    }
+                }
+                _ => {}
+            }
+        } else if let Some(_close_brace) = trimmed_line.find('}') {
+            if let Some(mut proxy) = current_proxy.take() {
+                if let Some(rule) = current_rule.take() {
+                    proxy.rules.push(rule);
+                }
+                config.proxies.push(proxy);
+            }
+        }
+    }
+
+    Ok(config)
+}
+#[test]
+fn test_parse() -> io::Result<()> {
+    let config = parse_ndppd_conf("demo.conf")?;
+    println!("{:#?}", config);
+    Ok(())
+}
 #[tokio::main]
 async fn main() {
     let args: Vec<String> = env::args().collect();
@@ -57,6 +180,7 @@ async fn main() {
         "Password for SOCKS5 authentication",
         "PASSWORD",
     );
+    opts.optopt("f", "follow", "Follow ndppd conf", "FOLLOW");
     opts.optopt("t", "timeout", "Timeout duration in seconds", "TIMEOUT"); // 新增-t参数
     opts.optflag("h", "help", "Print this help menu");
     opts.optopt("r", "system_route", "Whether to use system routing instead of ndpdd. (Provide network card interface, such as eth0)", "Network Interface");
@@ -94,11 +218,27 @@ async fn main() {
         .opt_str("S")
         .unwrap_or_else(|| "127.0.0.1:51081".to_string());
 
-    let ipv6_subnets = matches
+    let mut ipv6_subnets = matches
         .opt_str("i")
         .map(|s| parse_subnets::<Ipv6Cidr>(&s))
         .unwrap_or_else(Vec::new);
-
+    let follow = matches
+        .opt_str("f")
+        .unwrap_or_else(|| "/etc/ndppd.conf".to_string());
+    match parse_ndppd_conf(follow) {
+        Ok(config) => {
+            config
+                .proxies
+                .iter()
+                .flat_map(|r| {
+                    r.rules
+                        .iter()
+                        .flat_map(|r| parse_subnets::<Ipv6Cidr>(&r.prefix))
+                })
+                .for_each(|ipv6_subnet| ipv6_subnets.push(ipv6_subnet));
+        }
+        Err(_) => {}
+    };
     let ipv4_subnets = matches
         .opt_str("v")
         .map(|s| parse_subnets::<Ipv4Cidr>(&s))
